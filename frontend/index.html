@@ -1,40 +1,62 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pi Extension Dashboard</title>
+  <title>π Extensions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Uncut+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="container">
-    <header class="header">
-      <h1>π Extension Dashboard</h1>
-      <p class="subtitle">Discover trending pi extensions</p>
+  <a href="#packages" class="skip-link">Skip to content</a>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="logo">π</span>
+        <h1 class="title">Extensions</h1>
+        <span class="badge-count" id="total-count">—</span>
+      </div>
+      <div class="topbar-right">
+        <div class="search" data-has-input="false">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="search" placeholder="Search packages..." autocomplete="off" spellcheck="false">
+          <kbd class="search-kbd">/</kbd>
+        </div>
+      </div>
     </header>
 
-    <nav class="tabs">
-      <button class="tab active" data-sort="trending">🔥 Trending</button>
-      <button class="tab" data-sort="popular">⭐ Popular</button>
-      <button class="tab" data-sort="alltime">📈 All Time</button>
-      <button class="tab" data-sort="new">✨ New</button>
-      <button class="tab" data-sort="updated">📦 Updated</button>
+    <nav class="filters">
+      <button class="filter active" data-sort="trending">
+        Trending
+      </button>
+      <button class="filter" data-sort="popular">
+        Popular
+      </button>
+      <button class="filter" data-sort="alltime">
+        All Time
+      </button>
+      <button class="filter" data-sort="new">
+        New
+      </button>
+      <button class="filter" data-sort="updated">
+        Updated
+      </button>
     </nav>
 
-    <div class="search-bar">
-      <input type="search" id="search" placeholder="Search packages..." autocomplete="off">
-      <span class="search-icon">🔍</span>
-    </div>
-
-    <div id="stats" class="stats"></div>
-
-    <main id="packages" class="packages">
-      <div class="loading">Loading packages...</div>
+    <main class="content">
+      <section class="packages" id="packages">
+        <!-- Packages rendered by app.js -->
+      </section>
     </main>
 
-    <div id="pagination" class="pagination"></div>
+    <footer class="pagination" id="pagination"></footer>
   </div>
 
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>
