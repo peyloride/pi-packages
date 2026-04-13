@@ -1,0 +1,154 @@
+/* ═══════════════════════════════════════════════════════════════════
+   PI DESIGN SYSTEM — Design Tokens
+   ═══════════════════════════════════════════════════════════════════
+
+   A shared design system for pi coding agent extensions.
+   Built with OKLCH for perceptual uniformity.
+
+   Usage:
+     @import './design-system/css/tokens.css';
+     
+     .my-component {
+       background: var(--bg-raised);
+       color: var(--text-primary);
+       padding: var(--space-md);
+     }
+
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ──────────────────────────────────────────────────────────────────
+   COLOR TOKENS
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Background palette — tinted toward violet (hue 280) */
+  --bg-deep: oklch(8% 0.008 280);
+  --bg-raised: oklch(12% 0.012 280);
+  --bg-surface: oklch(16% 0.015 280);
+  --bg-hover: oklch(20% 0.018 280);
+  
+  /* Text hierarchy — tinted toward violet */
+  --text-primary: oklch(92% 0.008 280);
+  --text-secondary: oklch(70% 0.012 280);
+  --text-tertiary: oklch(55% 0.015 280);
+  
+  /* Accent — violet, tinted from brand */
+  --accent: oklch(65% 0.22 280);
+  --accent-dim: oklch(55% 0.18 280);
+  --accent-bright: oklch(75% 0.25 280);
+  
+  /* Semantic colors */
+  --success: oklch(70% 0.18 150);
+  --danger: oklch(65% 0.18 25);
+  --warning: oklch(75% 0.18 80);
+  
+  /* Border colors */
+  --border-subtle: var(--bg-surface);
+  --border-default: var(--bg-hover);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   TYPOGRAPHY TOKENS
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Font families */
+  --font-ui: 'Uncut Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  
+  /* Font sizes — 5-step scale */
+  --text-xs: 0.75rem;    /* 12px */
+  --text-sm: 0.875rem;   /* 14px */
+  --text-base: 1rem;     /* 16px */
+  --text-lg: 1.125rem;   /* 18px */
+  --text-xl: 1.5rem;     /* 24px */
+  
+  /* Line heights */
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+  
+  /* Font weights */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   SPACING TOKENS
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* 4px base scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  
+  /* Semantic spacing names */
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-4);
+  --space-lg: var(--space-6);
+  --space-xl: var(--space-8);
+  --space-2xl: var(--space-12);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   LAYOUT TOKENS
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Container widths */
+  --max-width-sm: 640px;
+  --max-width-md: 900px;
+  --max-width-lg: 1200px;
+  
+  /* Component heights */
+  --height-sm: 32px;
+  --height-md: 40px;
+  --height-lg: 48px;
+  --topbar-height: 64px;
+  
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+  
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+  --transition-base: 0.15s ease;
+  --transition-slow: 0.25s ease;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   SHADOWS (use sparingly)
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.05);
+  --shadow-md: 0 4px 6px oklch(0% 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px oklch(0% 0 0 / 0.15);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   Z-INDEX SCALE
+   ────────────────────────────────────────────────────────────────── */
+
+:root {
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}

@@ -13,7 +13,7 @@ interface CronSchedule {
   dayOfWeek: number | '*';
 }
 
-function parseCron(expression: string): CronSchedule {
+export function parseCron(expression: string): CronSchedule {
   const parts = expression.split(' ');
   if (parts.length !== 5) {
     throw new Error(`Invalid cron expression: ${expression}`);
@@ -28,7 +28,7 @@ function parseCron(expression: string): CronSchedule {
   };
 }
 
-function shouldRun(schedule: CronSchedule, now: Date): boolean {
+export function shouldRun(schedule: CronSchedule, now: Date): boolean {
   if (schedule.minute !== '*' && now.getUTCMinutes() !== schedule.minute) return false;
   if (schedule.hour !== '*' && now.getUTCHours() !== schedule.hour) return false;
   if (schedule.dayOfMonth !== '*' && now.getUTCDate() !== schedule.dayOfMonth) return false;
