@@ -33,7 +33,7 @@ interface NpmPointDownloadsResponse {
     package: string;
     start: string;
     end: string;
-  };
+  } | null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -77,23 +77,78 @@ export async function fetchPiPackages(): Promise<NpmSearchResult[]> {
   return allPackages;
 }
 
+function isScopedPackage(name: string): boolean {
+  return name.startsWith('@');
+}
+
+/**
+ * Fetch downloads for a single package (used for scoped packages which don't support bulk)
+ */
+async function fetchSinglePackageDownloads(
+  packageName: string
+): Promise<{ weekly: number; monthly: number; lastWeek: number } | null> {
+  const now = new Date();
+  const lastWeekStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+  const lastWeekEnd = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().split('T')[0];
+
+  let weekly = 0, monthly = 0, lastWeek = 0;
+
+  const weeklyRes = await fetch(`${NPM_DOWNLOADS_URL}/point/last-week/${packageName}`);
+  if (weeklyRes.ok) {
+    const data = await weeklyRes.json() as NpmPointDownloadsResponse;
+    const entry = data[packageName];
+    if (entry) weekly = entry.downloads;
+  }
+
+  await sleep(RATE_LIMIT_DELAY);
+  const monthlyRes = await fetch(`${NPM_DOWNLOADS_URL}/point/last-month/${packageName}`);
+  if (monthlyRes.ok) {
+    const data = await monthlyRes.json() as NpmPointDownloadsResponse;
+    const entry = data[packageName];
+    if (entry) monthly = entry.downloads;
+  }
+
+  await sleep(RATE_LIMIT_DELAY);
+  const lastWeekRange = `${fmt(lastWeekStart)}:${fmt(lastWeekEnd)}`;
+  const lastWeekRes = await fetch(`${NPM_DOWNLOADS_URL}/point/${lastWeekRange}/${packageName}`);
+  if (lastWeekRes.ok) {
+    const data = await lastWeekRes.json() as NpmPointDownloadsResponse;
+    const entry = data[packageName];
+    if (entry) lastWeek = entry.downloads;
+  }
+
+  if (weekly === 0 && monthly === 0 && lastWeek === 0) return null;
+  return { weekly, monthly, lastWeek };
+}
+
 /**
  * Fetch download counts in batches using point endpoint (bulk supported!)
+ * Scoped packages (@scope/pkg) cannot use bulk lookups and are fetched individually.
  */
 export async function fetchDownloadsBatched(
   packageNames: string[]
 ): Promise<Map<string, { weekly: number; monthly: number; lastWeek: number }>> {
   const allDownloads = new Map<string, { weekly: number; monthly: number; lastWeek: number }>();
   
-  // Split into batches of BATCH_SIZE
+  // Separate scoped and non-scoped packages
+  const scopedPackages = packageNames.filter(isScopedPackage);
+  const nonScopedPackages = packageNames.filter(n => !isScopedPackage(n));
+  
+  // Fetch non-scoped packages in bulk batches
   const batches: string[][] = [];
-  for (let i = 0; i < packageNames.length; i += BATCH_SIZE) {
-    batches.push(packageNames.slice(i, i + BATCH_SIZE));
+  for (let i = 0; i < nonScopedPackages.length; i += BATCH_SIZE) {
+    batches.push(nonScopedPackages.slice(i, i + BATCH_SIZE));
   }
   
-  console.log(`[Sync] Fetching downloads in ${batches.length} batches...`);
+  console.log(`[Sync] Fetching downloads: ${nonScopedPackages.length} non-scoped (${batches.length} batches) + ${scopedPackages.length} scoped (individual)`);
   
-  // Fetch last-week for all batches
+  const now = new Date();
+  const lastWeekStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+  const lastWeekEnd = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().split('T')[0];
+  const lastWeekRange = `${fmt(lastWeekStart)}:${fmt(lastWeekEnd)}`;
+
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     const packageList = batch.join(',');
@@ -105,6 +160,7 @@ export async function fetchDownloadsBatched(
     if (weeklyResponse.ok) {
       const weeklyData = await weeklyResponse.json() as NpmPointDownloadsResponse;
       for (const [pkgName, data] of Object.entries(weeklyData)) {
+        if (!data) continue;
         allDownloads.set(pkgName, { weekly: data.downloads, monthly: 0, lastWeek: 0 });
       }
     }
@@ -117,6 +173,7 @@ export async function fetchDownloadsBatched(
     if (monthlyResponse.ok) {
       const monthlyData = await monthlyResponse.json() as NpmPointDownloadsResponse;
       for (const [pkgName, data] of Object.entries(monthlyData)) {
+        if (!data) continue;
         const existing = allDownloads.get(pkgName);
         if (existing) {
           existing.monthly = data.downloads;
@@ -126,12 +183,13 @@ export async function fetchDownloadsBatched(
     
     // Get week-before-last for growth calculation
     await sleep(RATE_LIMIT_DELAY);
-    const lastWeekUrl = `${NPM_DOWNLOADS_URL}/point/2026-03-30:2026-04-05/${packageList}`;
+    const lastWeekUrl = `${NPM_DOWNLOADS_URL}/point/${lastWeekRange}/${packageList}`;
     const lastWeekResponse = await fetch(lastWeekUrl);
     
     if (lastWeekResponse.ok) {
       const lastWeekData = await lastWeekResponse.json() as NpmPointDownloadsResponse;
       for (const [pkgName, data] of Object.entries(lastWeekData)) {
+        if (!data) continue;
         const existing = allDownloads.get(pkgName);
         if (existing) {
           existing.lastWeek = data.downloads;
@@ -141,10 +199,25 @@ export async function fetchDownloadsBatched(
     
     console.log(`[Sync] Batch ${i + 1}/${batches.length} complete`);
     
-    // Rate limiting between batches
     if (i < batches.length - 1) {
       await sleep(RATE_LIMIT_DELAY);
     }
+  }
+
+  // Fetch scoped packages individually
+  for (let i = 0; i < scopedPackages.length; i++) {
+    try {
+      const result = await fetchSinglePackageDownloads(scopedPackages[i]);
+      if (result) {
+        allDownloads.set(scopedPackages[i], result);
+      }
+    } catch {
+      // Skip packages that fail
+    }
+    if ((i + 1) % 50 === 0 || i === scopedPackages.length - 1) {
+      console.log(`[Sync] Scoped packages: ${i + 1}/${scopedPackages.length}`);
+    }
+    await sleep(RATE_LIMIT_DELAY);
   }
   
   return allDownloads;
