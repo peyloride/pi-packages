@@ -98,14 +98,14 @@ app.get('/api/packages', async (c) => {
         p.npm_url,
         p.first_seen,
         p.last_publish,
-        COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) as weekly_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) as monthly_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) as last_week_downloads,
-        COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) as this_week_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) as weekly_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) as monthly_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) as last_week_downloads,
+        COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) as this_week_downloads,
         CASE 
-          WHEN COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) > 0
-          THEN (COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0)) * 100.0 / COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0)
-          ELSE CASE WHEN COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') AND d.date NOT LIKE '%\\_%' ESCAPE '\\' THEN d.downloads ELSE 0 END), 0) > 0 THEN 100 ELSE NULL END
+          WHEN COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) > 0
+          THEN (COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') THEN d.downloads ELSE 0 END), 0)) * 100.0 / COALESCE(SUM(CASE WHEN d.date >= date('now', '-14 days') AND d.date < date('now', '-7 days') THEN d.downloads ELSE 0 END), 0)
+          ELSE CASE WHEN COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) > 0 THEN 100 ELSE NULL END
         END as growth_percent
       FROM packages p
       LEFT JOIN daily_downloads d ON p.name = d.package_name
@@ -129,7 +129,7 @@ app.get('/api/packages', async (c) => {
       // Get sparkline data (last 7 days)
       const sparklineData = db.prepare(`
         SELECT downloads FROM daily_downloads
-        WHERE package_name = $name AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        WHERE package_name = $name 
         AND date >= date('now', '-7 days')
         ORDER BY date ASC
       `).all({ $name: pkg.name }) as Array<{ downloads: number }>;

@@ -3,7 +3,7 @@ import { getDb } from './db';
 const NPM_SEARCH_URL = 'https://registry.npmjs.org/-/v1/search';
 const NPM_DOWNLOADS_URL = 'https://api.npmjs.org/downloads';
 const RATE_LIMIT_DELAY = 200; // 200ms between requests
-const BATCH_SIZE = 50; // Packages per bulk download request
+const BATCH_SIZE = 128; // Packages per bulk download request (npm limit for /range)
 
 interface NpmSearchResult {
   updated?: string;  // Last modified date from search API
@@ -36,8 +36,24 @@ interface NpmPointDownloadsResponse {
   } | null;
 }
 
+interface NpmRangeDay {
+  downloads: number;
+  day: string;
+}
+
+interface NpmRangeDownloadsResponse {
+  start: string;
+  end: string;
+  package: string;
+  downloads: NpmRangeDay[];
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function fmt(d: Date): string {
+  return d.toISOString().split('T')[0];
 }
 
 /**
@@ -82,118 +98,88 @@ function isScopedPackage(name: string): boolean {
 }
 
 /**
- * Fetch downloads for a single package (used for scoped packages which don't support bulk)
+ * Fetch daily download data for a single package via /range endpoint.
+ * Returns map of date -> downloads for the last 30 days.
  */
-async function fetchSinglePackageDownloads(
-  packageName: string
-): Promise<{ weekly: number; monthly: number; lastWeek: number } | null> {
+async function fetchDailyDownloadsSingle(packageName: string): Promise<Map<string, number>> {
   const now = new Date();
-  const lastWeekStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-  const lastWeekEnd = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const fmt = (d: Date) => d.toISOString().split('T')[0];
+  const start = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const end = fmt(now);
 
-  let weekly = 0, monthly = 0, lastWeek = 0;
+  const dailyMap = new Map<string, number>();
 
-  const weeklyRes = await fetch(`${NPM_DOWNLOADS_URL}/point/last-week/${packageName}`);
-  if (weeklyRes.ok) {
-    const data = await weeklyRes.json() as NpmPointDownloadsResponse;
-    const entry = data[packageName];
-    if (entry) weekly = entry.downloads;
+  // Fetch daily range for sparklines + weekly/monthly aggregation
+  const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${start}:${end}/${packageName}`;
+  const rangeRes = await fetch(rangeUrl);
+  if (rangeRes.ok) {
+    const data = await rangeRes.json() as NpmRangeDownloadsResponse;
+    for (const day of data.downloads) {
+      dailyMap.set(day.day, day.downloads);
+    }
   }
 
-  await sleep(RATE_LIMIT_DELAY);
-  const monthlyRes = await fetch(`${NPM_DOWNLOADS_URL}/point/last-month/${packageName}`);
-  if (monthlyRes.ok) {
-    const data = await monthlyRes.json() as NpmPointDownloadsResponse;
-    const entry = data[packageName];
-    if (entry) monthly = entry.downloads;
-  }
+  return dailyMap;
+}
 
-  await sleep(RATE_LIMIT_DELAY);
-  const lastWeekRange = `${fmt(lastWeekStart)}:${fmt(lastWeekEnd)}`;
-  const lastWeekRes = await fetch(`${NPM_DOWNLOADS_URL}/point/${lastWeekRange}/${packageName}`);
-  if (lastWeekRes.ok) {
-    const data = await lastWeekRes.json() as NpmPointDownloadsResponse;
-    const entry = data[packageName];
-    if (entry) lastWeek = entry.downloads;
-  }
-
-  if (weekly === 0 && monthly === 0 && lastWeek === 0) return null;
-  return { weekly, monthly, lastWeek };
+interface DownloadData {
+  daily: Map<string, number>;  // date -> downloads (last 30 days)
+  weekly: number;
+  monthly: number;
+  lastWeek: number;
 }
 
 /**
- * Fetch download counts in batches using point endpoint (bulk supported!)
- * Scoped packages (@scope/pkg) cannot use bulk lookups and are fetched individually.
+ * Fetch download counts in batches.
+ * Uses /range endpoint for real daily data (sparklines + aggregation).
+ * Scoped packages are fetched individually (no bulk support).
  */
 export async function fetchDownloadsBatched(
   packageNames: string[]
-): Promise<Map<string, { weekly: number; monthly: number; lastWeek: number }>> {
-  const allDownloads = new Map<string, { weekly: number; monthly: number; lastWeek: number }>();
+): Promise<Map<string, DownloadData>> {
+  const allDownloads = new Map<string, DownloadData>();
   
-  // Separate scoped and non-scoped packages
   const scopedPackages = packageNames.filter(isScopedPackage);
   const nonScopedPackages = packageNames.filter(n => !isScopedPackage(n));
   
-  // Fetch non-scoped packages in bulk batches
+  const now = new Date();
+  const rangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const rangeEnd = fmt(now);
+  const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+  const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
+  
+  // Process non-scoped packages in bulk batches using /range endpoint
   const batches: string[][] = [];
   for (let i = 0; i < nonScopedPackages.length; i += BATCH_SIZE) {
     batches.push(nonScopedPackages.slice(i, i + BATCH_SIZE));
   }
   
   console.log(`[Sync] Fetching downloads: ${nonScopedPackages.length} non-scoped (${batches.length} batches) + ${scopedPackages.length} scoped (individual)`);
-  
-  const now = new Date();
-  const lastWeekStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-  const lastWeekEnd = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const fmt = (d: Date) => d.toISOString().split('T')[0];
-  const lastWeekRange = `${fmt(lastWeekStart)}:${fmt(lastWeekEnd)}`;
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     const packageList = batch.join(',');
     
-    // Get weekly downloads (this week)
-    const weeklyUrl = `${NPM_DOWNLOADS_URL}/point/last-week/${packageList}`;
-    const weeklyResponse = await fetch(weeklyUrl);
+    const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${packageList}`;
+    const rangeResponse = await fetch(rangeUrl);
     
-    if (weeklyResponse.ok) {
-      const weeklyData = await weeklyResponse.json() as NpmPointDownloadsResponse;
-      for (const [pkgName, data] of Object.entries(weeklyData)) {
-        if (!data) continue;
-        allDownloads.set(pkgName, { weekly: data.downloads, monthly: 0, lastWeek: 0 });
-      }
-    }
-    
-    // Get monthly downloads
-    await sleep(RATE_LIMIT_DELAY);
-    const monthlyUrl = `${NPM_DOWNLOADS_URL}/point/last-month/${packageList}`;
-    const monthlyResponse = await fetch(monthlyUrl);
-    
-    if (monthlyResponse.ok) {
-      const monthlyData = await monthlyResponse.json() as NpmPointDownloadsResponse;
-      for (const [pkgName, data] of Object.entries(monthlyData)) {
-        if (!data) continue;
-        const existing = allDownloads.get(pkgName);
-        if (existing) {
-          existing.monthly = data.downloads;
+    if (rangeResponse.ok) {
+      const rangeData = await rangeResponse.json() as { [key: string]: NpmRangeDownloadsResponse | null };
+      for (const [pkgName, pkgData] of Object.entries(rangeData)) {
+        if (!pkgData) continue;
+        const daily = new Map<string, number>();
+        for (const day of pkgData.downloads) {
+          daily.set(day.day, day.downloads);
         }
-      }
-    }
-    
-    // Get week-before-last for growth calculation
-    await sleep(RATE_LIMIT_DELAY);
-    const lastWeekUrl = `${NPM_DOWNLOADS_URL}/point/${lastWeekRange}/${packageList}`;
-    const lastWeekResponse = await fetch(lastWeekUrl);
-    
-    if (lastWeekResponse.ok) {
-      const lastWeekData = await lastWeekResponse.json() as NpmPointDownloadsResponse;
-      for (const [pkgName, data] of Object.entries(lastWeekData)) {
-        if (!data) continue;
-        const existing = allDownloads.get(pkgName);
-        if (existing) {
-          existing.lastWeek = data.downloads;
+        
+        // Aggregate weekly/monthly from daily data
+        let weekly = 0, monthly = 0, lastWeek = 0;
+        for (const [date, dl] of daily) {
+          if (date >= rangeStart) monthly += dl;
+          if (date >= weekAgo) weekly += dl;
+          if (date >= twoWeeksAgo && date < weekAgo) lastWeek += dl;
         }
+        
+        allDownloads.set(pkgName, { daily, weekly, monthly, lastWeek });
       }
     }
     
@@ -207,9 +193,17 @@ export async function fetchDownloadsBatched(
   // Fetch scoped packages individually
   for (let i = 0; i < scopedPackages.length; i++) {
     try {
-      const result = await fetchSinglePackageDownloads(scopedPackages[i]);
-      if (result) {
-        allDownloads.set(scopedPackages[i], result);
+      const daily = await fetchDailyDownloadsSingle(scopedPackages[i]);
+      
+      let weekly = 0, monthly = 0, lastWeek = 0;
+      for (const [date, dl] of daily) {
+        if (date >= rangeStart) monthly += dl;
+        if (date >= weekAgo) weekly += dl;
+        if (date >= twoWeeksAgo && date < weekAgo) lastWeek += dl;
+      }
+      
+      if (weekly > 0 || monthly > 0) {
+        allDownloads.set(scopedPackages[i], { daily, weekly, monthly, lastWeek });
       }
     } catch {
       // Skip packages that fail
@@ -256,25 +250,17 @@ export function upsertPackage(pkg: NpmSearchResult): void {
     $publisher: pkg.package.publisher?.username || null,
     $github_url: githubUrl,
     $npm_url: pkg.package.links?.npm || `https://www.npmjs.com/package/${pkg.package.name}`,
-    $first_seen: pkg.package.date || now,  // Use version date for first_seen
-    $last_publish: pkg.updated || null,    // Use updated field for last_publish
+    $first_seen: pkg.package.date || now,
+    $last_publish: pkg.updated || null,
   });
 }
 
 /**
- * Persist download counts to SQLite
- * We store weekly and monthly totals as separate date entries for API queries
+ * Persist daily download data to SQLite.
+ * Stores actual per-day counts from the npm /range endpoint.
  */
-export function upsertDownloads(packageName: string, weekly: number, monthly: number, lastWeek: number): void {
+export function upsertDownloads(packageName: string, data: DownloadData): void {
   const db = getDb();
-  
-  // Get dates for storage
-  const today = new Date();
-  const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const twoWeeksAgo = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000);
-  const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-  
-  const formatDate = (d: Date) => d.toISOString().split('T')[0];
   
   const stmt = db.prepare(`
     INSERT INTO daily_downloads (package_name, date, downloads)
@@ -284,18 +270,13 @@ export function upsertDownloads(packageName: string, weekly: number, monthly: nu
   `);
 
   const transaction = db.transaction(() => {
-    // Store daily breakdowns for the past week (for sparklines)
-    for (let i = 0; i < 7; i++) {
-      const date = new Date(weekAgo.getTime() + i * 24 * 60 * 60 * 1000);
-      // Distribute weekly total across days (approximation)
-      const dailyEstimate = Math.round(weekly / 7);
-      stmt.run({ $package_name: packageName, $date: formatDate(date), $downloads: dailyEstimate });
-    }
+    // Delete old data for this package to avoid stale rows
+    db.prepare('DELETE FROM daily_downloads WHERE package_name = $name').run({ $name: packageName });
     
-    // Also store special markers for weekly/last-week/monthly totals
-    stmt.run({ $package_name: packageName, $date: 'weekly_total', $downloads: weekly });
-    stmt.run({ $package_name: packageName, $date: 'last_week_total', $downloads: lastWeek });
-    stmt.run({ $package_name: packageName, $date: 'monthly_total', $downloads: monthly });
+    // Store actual daily downloads
+    for (const [date, downloads] of data.daily) {
+      stmt.run({ $package_name: packageName, $date: date, $downloads: downloads });
+    }
   });
 
   transaction();
@@ -330,7 +311,7 @@ export async function runSync(): Promise<{ packages: number; downloadsUpdated: n
     for (const pkg of packages) {
       const downloads = allDownloads.get(pkg.package.name);
       if (downloads && (downloads.weekly > 0 || downloads.monthly > 0)) {
-        upsertDownloads(pkg.package.name, downloads.weekly, downloads.monthly, downloads.lastWeek);
+        upsertDownloads(pkg.package.name, downloads);
         downloadsUpdated++;
       }
     }
