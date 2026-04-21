@@ -5,7 +5,7 @@ import { getDb, closeDb } from './db';
 import { startCron, triggerSync, isSyncRunning, getNextRunTime } from './cron';
 
 const app = new Hono();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 0;
 
 // Start cron scheduler
 startCron();
@@ -312,17 +312,18 @@ app.get('*', async (c) => {
 // Server
 // =============================================================================
 
-console.log(`[Server] Starting on port ${PORT}`);
-console.log(`[Server] Dashboard: http://localhost:${PORT}`);
-console.log(`[Server] API: http://localhost:${PORT}/api/packages`);
+const server = Bun.serve({
+  port: PORT,
+  fetch: app.fetch,
+});
+
+console.log(`[Server] Starting on port ${server.port}`);
+console.log(`[Server] Dashboard: http://localhost:${server.port}`);
+console.log(`[Server] API: http://localhost:${server.port}/api/packages`);
 
 process.on('SIGINT', () => {
   console.log('\n[Server] Shutting down...');
+  server.stop();
   closeDb();
   process.exit(0);
 });
-
-export default {
-  port: PORT,
-  fetch: app.fetch,
-};
