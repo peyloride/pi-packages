@@ -131,6 +131,51 @@
   opacity: 1;
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   PERIOD SELECTOR
+   ────────────────────────────────────────────────────────────────── */
+
+.filter-separator {
+  width: 1px;
+  height: 20px;
+  background: var(--border-default);
+  margin: 0 var(--space-xs);
+  flex-shrink: 0;
+}
+
+.filter-group {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.period {
+  display: flex;
+  align-items: center;
+  padding: var(--space-xs) var(--space-sm);
+  min-height: 32px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.period:hover {
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+}
+
+.period.active {
+  color: var(--accent-bright);
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    PACKAGE CARD COMPONENT
    ═══════════════════════════════════════════════════════════════════ */

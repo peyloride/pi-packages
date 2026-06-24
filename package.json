@@ -4,15 +4,14 @@
   "description": "Dashboard for pi extension packages with trending, popularity, and freshness metrics",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch backend/index.ts",
-    "start": "bun run backend/index.ts",
-    "sync": "bun run backend/sync.ts"
+    "dev": "nub watch backend/index.ts",
+    "start": "nub backend/index.ts",
+    "sync": "nub backend/sync.ts",
+    "sync:full": "nub backend/sync.ts --full"
   },
   "dependencies": {
-    "hono": "^4.0.0"
+    "hono": "^4.0.0",
+    "@hono/node-server": "^1.13.0"
   },
-  "devDependencies": {
-    "bun-types": "^1.1.0",
-    "@types/bun": "^1.1.0"
-  }
+  "devDependencies": {}
 }

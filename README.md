@@ -15,19 +15,20 @@ A dashboard for discovering trending, popular, and new pi extension packages.
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) >= 1.0.0
+- [Node.js](https://nodejs.org/) >= 18.19
+- [Nub](https://nubjs.com/) >= 0.1.0 (install: `curl -fsSL https://nubjs.com/install.sh | bash`)
 
 ### Development
 
 ```bash
 # Install dependencies
-bun install
+nub install
 
 # Run the sync to populate the database
-bun run sync
+nub run sync
 
 # Start the development server
-bun run dev
+nub run dev
 ```
 
 The dashboard will be available at http://localhost:3000
@@ -108,9 +109,10 @@ The sync service respects npm's acceptable use policy:
 
 ## Tech Stack
 
-- **Runtime**: [Bun](https://bun.sh/)
+- **Runtime**: [Node.js](https://nodejs.org/) + [Nub](https://nubjs.com/) (TypeScript, watch mode, package management)
 - **Framework**: [Hono](https://honojs.dev/)
-- **Database**: SQLite (via `bun:sqlite`)
+- **Server**: [@hono/node-server](https://github.com/honojs/node-server)
+- **Database**: SQLite (via `node:sqlite`)
 - **Frontend**: Vanilla HTML/CSS/JS (no build step)
 
 ## License

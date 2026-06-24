@@ -1,12 +1,14 @@
-FROM oven/bun:1-alpine
+FROM node:22-alpine
+
+RUN npm install -g @nubjs/nub
 
 WORKDIR /app
 
 # Copy package files
-COPY package.json bun.lockb* ./
+COPY package.json ./
 
 # Install dependencies
-RUN bun install --frozen-lockfile
+RUN nub install --frozen-lockfile
 
 # Copy source code
 COPY . .
@@ -23,4 +25,4 @@ ENV DB_PATH=/app/data/dashboard.db
 ENV SYNC_CRON="0 3 * * *"
 
 # Run the server
-CMD ["bun", "run", "backend/index.ts"]
+CMD ["nub", "backend/index.ts"]

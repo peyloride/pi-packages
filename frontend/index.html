@@ -31,21 +31,26 @@
     </header>
 
     <nav class="filters">
-      <button class="filter active" data-sort="trending">
-        Trending
-      </button>
-      <button class="filter" data-sort="popular">
-        Popular
-      </button>
-      <button class="filter" data-sort="alltime">
-        All Time
-      </button>
-      <button class="filter" data-sort="new">
-        New
-      </button>
-      <button class="filter" data-sort="updated">
-        Updated
-      </button>
+      <div class="filter-group sort-group">
+        <button class="filter active" data-sort="trending">
+          Trending
+        </button>
+        <button class="filter" data-sort="popular">
+          Popular
+        </button>
+        <button class="filter" data-sort="new">
+          New
+        </button>
+        <button class="filter" data-sort="updated">
+          Updated
+        </button>
+      </div>
+      <div class="filter-separator"></div>
+      <div class="filter-group period-group">
+        <button class="period" data-period="daily">Day</button>
+        <button class="period active" data-period="weekly">Week</button>
+        <button class="period" data-period="monthly">Month</button>
+      </div>
     </nav>
 
     <main class="content">

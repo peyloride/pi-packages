@@ -14,6 +14,7 @@ window.timeAgo = timeAgo;
 
 // State
 let currentSort = 'trending';
+let currentPeriod = 'weekly';
 let currentSearch = '';
 let currentOffset = 0;
 const limit = 30;
@@ -27,7 +28,8 @@ const packagesEl = document.getElementById('packages');
 const paginationEl = document.getElementById('pagination');
 const totalCountEl = document.getElementById('total-count');
 const searchInput = document.getElementById('search');
-const filters = document.querySelectorAll('.filter');
+const sortFilters = document.querySelectorAll('.sort-group .filter');
+const periodButtons = document.querySelectorAll('.period-group .period');
 const searchContainer = document.querySelector('.search');
 
 // Initialize
@@ -36,11 +38,11 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStats();
   setupEventListeners();
   setupSearch();
-  setupFilters();
+  setupSortFilters();
+  setupPeriodButtons();
 });
 
 function setupSearch() {
-  // Search with debounce
   let debounceTimer;
   searchInput.addEventListener('input', (e) => {
     const value = e.target.value.trim();
@@ -67,11 +69,10 @@ function setupSearch() {
   });
 }
 
-function setupFilters() {
-  // Filter clicks
-  filters.forEach(filter => {
+function setupSortFilters() {
+  sortFilters.forEach(filter => {
     filter.addEventListener('click', () => {
-      filters.forEach(f => f.classList.remove('active'));
+      sortFilters.forEach(f => f.classList.remove('active'));
       filter.classList.add('active');
       currentSort = filter.dataset.sort;
       currentOffset = 0;
@@ -80,8 +81,19 @@ function setupFilters() {
   });
 }
 
+function setupPeriodButtons() {
+  periodButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      periodButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPeriod = btn.dataset.period;
+      currentOffset = 0;
+      loadPackages();
+    });
+  });
+}
+
 function setupEventListeners() {
-  // Global retry handler
   window.retryLoad = () => loadPackages();
 }
 
@@ -93,6 +105,7 @@ async function loadPackages() {
   try {
     const params = new URLSearchParams({
       sort: currentSort,
+      period: currentPeriod,
       limit: limit.toString(),
       offset: currentOffset.toString(),
     });
@@ -110,8 +123,6 @@ async function loadPackages() {
     const data = await response.json();
     
     totalCount = data.pagination?.total || data.packages.length;
-    
-    // Update total count badge
     totalCountEl.textContent = formatNumber(totalCount);
     
     if (data.packages.length === 0) {
@@ -141,7 +152,6 @@ async function loadPackages() {
       return;
     }
     
-    // Render packages using design system
     renderPackages(data.packages);
     renderPagination();
     

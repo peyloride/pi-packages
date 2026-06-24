@@ -40,14 +40,11 @@ export class PackageCard {
     const { data, options } = this;
     
     // Build stats HTML
+    const downloadsLabel = data.downloads_label || '/week';
     const statsHtml = `
       <div class="stat">
-        <span class="stat-value weekly-downloads">${formatNumber(data.weekly_downloads)}</span>
-        <span class="stat-label">/week</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value total-downloads">${formatNumber(data.total_downloads)}</span>
-        <span class="stat-label">total</span>
+        <span class="stat-value weekly-downloads">${formatNumber(data.downloads)}</span>
+        <span class="stat-label">${downloadsLabel}</span>
       </div>
       ${options.showTrend ? `
       <div class="stat trend">

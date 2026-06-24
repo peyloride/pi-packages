@@ -29,6 +29,12 @@ describe('cron.ts', () => {
       expect(schedule.hour).toBe('*');
     });
 
+    it('should treat interval patterns as wildcards', () => {
+      const schedule = parseCron('0 */4 * * *');
+      expect(schedule.minute).toBe(0);
+      expect(schedule.hour).toBe('*');  // */4 treated as wildcard
+    });
+
     it('should parse cron with specific day', () => {
       const schedule = parseCron('30 14 15 * *');
       expect(schedule.minute).toBe(30);

@@ -62,6 +62,20 @@ describe('db.ts', () => {
       expect(columnNames).toContain('date');
       expect(columnNames).toContain('downloads');
     });
+
+    it('should create sync_meta table', () => {
+      const result = testDb.prepare(`
+        SELECT name FROM sqlite_master WHERE type='table' AND name='sync_meta'
+      `).get() as { name: string } | undefined;
+      expect(result?.name).toBe('sync_meta');
+    });
+
+    it('should have correct columns in sync_meta table', () => {
+      const columns = testDb.prepare('PRAGMA table_info(sync_meta)').all() as Array<{ name: string }>;
+      const columnNames = columns.map(c => c.name);
+      expect(columnNames).toContain('key');
+      expect(columnNames).toContain('value');
+    });
   });
 
   describe('packages CRUD', () => {

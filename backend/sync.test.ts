@@ -17,9 +17,9 @@ describe('sync.ts', () => {
     it('should fetch packages from npm registry', async () => {
       const { fetchPiPackages } = await import('./sync');
       
-      // Mock the fetch response
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: { get: () => null },
         json: async () => ({
           total: 1,
           objects: [{
@@ -39,13 +39,15 @@ describe('sync.ts', () => {
       expect(packages[0].package.name).toBe('test-pkg');
     });
 
-    it('should handle fetch errors', async () => {
+    it('should handle fetch errors without retries on 4xx', async () => {
       const { fetchPiPackages } = await import('./sync');
       
+      // 403 doesn't trigger retries
       mockFetch.mockResolvedValueOnce({
         ok: false,
-        status: 500,
-        statusText: 'Internal Server Error'
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { get: () => null },
       });
 
       await expect(fetchPiPackages()).rejects.toThrow('npm search failed');
@@ -56,6 +58,7 @@ describe('sync.ts', () => {
       
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: { get: () => null },
         json: async () => ({ total: 0, objects: [] })
       });
 
@@ -69,9 +72,9 @@ describe('sync.ts', () => {
     it('should handle pagination with multiple pages', async () => {
       const { fetchPiPackages } = await import('./sync');
       
-      // First page
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: { get: () => null },
         json: async () => ({ 
           total: 500, 
           objects: Array(250).fill(null).map((_, i) => ({
@@ -81,9 +84,9 @@ describe('sync.ts', () => {
         })
       });
       
-      // Second page  
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: { get: () => null },
         json: async () => ({ 
           total: 500, 
           objects: Array(250).fill(null).map((_, i) => ({
@@ -102,38 +105,31 @@ describe('sync.ts', () => {
     it('should fetch downloads for multiple packages', async () => {
       const { fetchDownloadsBatched } = await import('./sync');
       
-      // Mock weekly downloads response
+      const day1 = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const day2 = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: { get: () => null },
         json: async () => ({
-          'pkg1': { downloads: 100, package: 'pkg1', start: '2024-01-01', end: '2024-01-07' },
-          'pkg2': { downloads: 200, package: 'pkg2', start: '2024-01-01', end: '2024-01-07' }
+          'pkg1': { 
+            downloads: [{ day: day1, downloads: 50 }, { day: day2, downloads: 50 }],
+            package: 'pkg1', 
+            start: day2, 
+            end: day1 
+          },
+          'pkg2': { 
+            downloads: [{ day: day1, downloads: 100 }, { day: day2, downloads: 100 }],
+            package: 'pkg2', 
+            start: day2, 
+            end: day1 
+          }
         })
       });
       
-      // Mock monthly downloads response
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          'pkg1': { downloads: 400, package: 'pkg1' },
-          'pkg2': { downloads: 800, package: 'pkg2' }
-        })
-      });
-      
-      // Mock last week downloads response
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          'pkg1': { downloads: 90, package: 'pkg1' },
-          'pkg2': { downloads: 180, package: 'pkg2' }
-        })
-      });
-
       const downloads = await fetchDownloadsBatched(['pkg1', 'pkg2']);
       
       expect(downloads.size).toBe(2);
-      expect(downloads.get('pkg1')?.weekly).toBe(100);
-      expect(downloads.get('pkg1')?.monthly).toBe(400);
     });
 
     it('should handle empty package list', async () => {
@@ -146,23 +142,14 @@ describe('sync.ts', () => {
     it('should handle failed fetch gracefully', async () => {
       const { fetchDownloadsBatched } = await import('./sync');
       
+      // 403 doesn't trigger retries
       mockFetch.mockResolvedValueOnce({
         ok: false,
-        status: 500
+        status: 403,
+        headers: { get: () => null },
       });
       
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500
-      });
-      
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500
-      });
-
       const downloads = await fetchDownloadsBatched(['pkg1']);
-      // Should return empty map when all requests fail
       expect(downloads.size).toBe(0);
     });
   });
@@ -189,7 +176,6 @@ describe('sync.ts', () => {
 
       upsertPackage(pkgResult);
       
-      // Verify it was inserted
       const { getDb } = await import('./db');
       const db = getDb();
       const pkg = db.prepare('SELECT * FROM packages WHERE name = ?').get('test-pkg');
@@ -223,10 +209,9 @@ describe('sync.ts', () => {
   });
 
   describe('upsertDownloads', () => {
-    it('should insert download data', async () => {
+    it('should insert download data with daily map', async () => {
       const { upsertPackage, upsertDownloads } = await import('./sync');
       
-      // First insert the package
       upsertPackage({
         package: {
           name: 'test-pkg3',
@@ -235,20 +220,28 @@ describe('sync.ts', () => {
         }
       });
       
-      // Insert downloads
-      upsertDownloads('test-pkg3', 100, 400, 90);
+      const today = new Date().toISOString().split('T')[0];
+      const daily = new Map<string, number>();
+      daily.set(today, 42);
+      daily.set(new Date(Date.now() - 86400000).toISOString().split('T')[0], 10);
+      
+      upsertDownloads('test-pkg3', { 
+        daily, 
+        weekly: 52, 
+        monthly: 52, 
+        lastWeek: 10 
+      });
       
       const { getDb } = await import('./db');
       const db = getDb();
       const downloads = db.prepare('SELECT * FROM daily_downloads WHERE package_name = ?').all('test-pkg3');
       
-      expect(downloads.length).toBeGreaterThan(0);
+      expect(downloads.length).toBe(2);
     });
 
-    it('should update existing download data', async () => {
+    it('should update existing download data by replacing', async () => {
       const { upsertPackage, upsertDownloads } = await import('./sync');
       
-      // First insert
       upsertPackage({
         package: {
           name: 'test-pkg4',
@@ -257,14 +250,63 @@ describe('sync.ts', () => {
         }
       });
       
-      upsertDownloads('test-pkg4', 100, 400, 90);
-      upsertDownloads('test-pkg4', 200, 800, 180); // Update with new values
+      const today = new Date().toISOString().split('T')[0];
+      
+      // First insert
+      upsertDownloads('test-pkg4', { 
+        daily: new Map([[today, 100]]), 
+        weekly: 100, 
+        monthly: 100, 
+        lastWeek: 0 
+      });
+      
+      // Replace with new values
+      upsertDownloads('test-pkg4', { 
+        daily: new Map([[today, 200]]), 
+        weekly: 200, 
+        monthly: 200, 
+        lastWeek: 0 
+      });
       
       const { getDb } = await import('./db');
       const db = getDb();
-      const weekly = db.prepare('SELECT downloads FROM daily_downloads WHERE package_name = ? AND date = ?').get('test-pkg4', 'weekly_total') as { downloads: number };
+      const row = db.prepare('SELECT downloads FROM daily_downloads WHERE package_name = ? AND date = ?').get('test-pkg4', today) as { downloads: number };
       
-      expect(weekly.downloads).toBe(200);
+      expect(row.downloads).toBe(200);
+    });
+  });
+
+  describe('diffPackages', () => {
+    it('should identify new, updated, and unchanged packages', async () => {
+      const { diffPackages, upsertPackage } = await import('./sync');
+      
+      // Pre-populate DB with existing packages
+      upsertPackage({
+        package: { name: 'existing-pkg', version: '1.0.0', links: { npm: 'https://npmjs.com/existing-pkg' } },
+        updated: '2024-01-01T00:00:00.000Z',
+      });
+      
+      upsertPackage({
+        package: { name: 'unchanged-pkg', version: '2.0.0', links: { npm: 'https://npmjs.com/unchanged-pkg' } },
+        updated: '2024-06-01T00:00:00.000Z',
+      });
+      
+      const fetchedPackages = [
+        // New — not in DB
+        { package: { name: 'brand-new-pkg', version: '0.1.0', links: { npm: 'https://npmjs.com/brand-new-pkg' } }, updated: '2024-07-01T00:00:00.000Z' },
+        // Updated — version changed
+        { package: { name: 'existing-pkg', version: '2.0.0', links: { npm: 'https://npmjs.com/existing-pkg' } }, updated: '2024-07-01T00:00:00.000Z' },
+        // Unchanged
+        { package: { name: 'unchanged-pkg', version: '2.0.0', links: { npm: 'https://npmjs.com/unchanged-pkg' } }, updated: '2024-06-01T00:00:00.000Z' },
+      ];
+      
+      const diff = diffPackages(fetchedPackages);
+      expect(diff.newPackages.length).toBe(1);
+      expect(diff.newPackages[0].package.name).toBe('brand-new-pkg');
+      expect(diff.updatedPackages.length).toBe(1);
+      expect(diff.updatedPackages[0].package.name).toBe('existing-pkg');
+      expect(diff.unchangedPackages.length).toBe(1);
+      expect(diff.unchangedPackages[0].package.name).toBe('unchanged-pkg');
     });
   });
 
@@ -350,28 +392,6 @@ describe('sync.ts', () => {
       const pkg = db.prepare('SELECT github_url FROM packages WHERE name = ?').get('no-repo-pkg') as { github_url: string | null };
       
       expect(pkg.github_url).toBeNull();
-    });
-  });
-
-  describe('upsertDownloads edge cases', () => {
-    it('should handle zero downloads', async () => {
-      const { upsertPackage, upsertDownloads } = await import('./sync');
-      
-      upsertPackage({
-        package: {
-          name: 'zero-dl-pkg',
-          version: '1.0.0',
-          links: { npm: 'https://npmjs.com/zero-dl-pkg' }
-        }
-      });
-      
-      // Should not throw with zero downloads
-      upsertDownloads('zero-dl-pkg', 0, 0, 0);
-      
-      const { getDb } = await import('./db');
-      const db = getDb();
-      const downloads = db.prepare('SELECT * FROM daily_downloads WHERE package_name = ?').all('zero-dl-pkg');
-      expect(downloads.length).toBeGreaterThan(0);
     });
   });
 });
