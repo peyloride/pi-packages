@@ -3,9 +3,12 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { cors } from 'hono/cors';
 import { etag } from 'hono/etag';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { getDb, closeDb } from './db';
 import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
+import { computeAssetVersion, buildAssetCache } from './assets';
 
 const app = new Hono();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -452,15 +455,51 @@ app.post('/api/sync', async (c) => {
 });
 
 // =============================================================================
-// Static Files (Frontend)
+// Static Files (Frontend) — immutable cache with content-version busting
 // =============================================================================
+//
+// Frontend assets are pre-loaded into memory at boot with `?v=<version>`
+// stamped onto every relative reference (HTML asset URLs, JS import/export
+// specifiers, CSS @import/url()). The version rotates on any file mtime
+// change (i.e. on deploy), so:
+//   - assets get `Cache-Control: public, max-age=31536000, immutable` (safe,
+//     because their URL changes when content changes), and
+//   - index.html gets `no-cache` so returning visitors pick up the new ?v=
+//     query strings and re-fetch any changed asset.
 
-app.use('/*', serveStatic({ root: './frontend' }));
+const FRONTEND_DIR = './frontend';
+const ASSET_VERSION = computeAssetVersion(FRONTEND_DIR);
+const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const assetCache = buildAssetCache(FRONTEND_DIR, ASSET_VERSION);
 
-// Fallback to index.html for SPA routing
+// Serve a stamped asset from the in-memory cache. Static-file requests hit
+// this before serveStatic, so disk is never touched on the hot path.
+app.get('/*', async (c, next) => {
+  let path = c.req.path;
+  if (path === '/') path = '/index.html';
+  const asset = assetCache.get(path);
+  if (!asset) return next();
+  return new Response(asset.content, {
+    status: 200,
+    headers: {
+      'content-type': asset.contentType,
+      'cache-control': path === '/index.html' ? 'no-cache' : ASSET_CACHE_CONTROL,
+    },
+  });
+});
+
+// serveStatic is kept as a fallback for any file the in-memory cache doesn't
+// cover (e.g. assets added at runtime, which shouldn't happen in practice).
+app.use('/*', serveStatic({ root: FRONTEND_DIR }));
+
+// SPA fallback: unknown routes serve index.html so client-side routing works.
+// Uses the stamped cache (no per-request disk read).
 app.get('*', async (c) => {
-  const html = readFileSync('./frontend/index.html', 'utf-8');
-  return c.html(html);
+  const asset = assetCache.get('/index.html');
+  return new Response(asset?.content ?? '', {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' },
+  });
 });
 
 // =============================================================================
