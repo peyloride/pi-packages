@@ -11,7 +11,8 @@ services:
     environment:
       - PORT=3000
       - DB_PATH=/app/data/dashboard.db
-      - SYNC_CRON=0 3 * * *
+      - SYNC_CRON=0 * * * *
+      - SYNC_FULL_CRON=0 3 * * *
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/stats"]

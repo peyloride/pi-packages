@@ -48,10 +48,25 @@ export function shouldRun(schedule: CronSchedule, now: Date): boolean {
   return true;
 }
 
-let lastIncrementalDate: string | null = null;
-let lastFullDate: string | null = null;
+let lastIncrementalRun: string | null = null;
+let lastFullRun: string | null = null;
 let isRunning = false;
 let lastSyncResult: SyncResult | null = null;
+
+/**
+ * Per-trigger dedup key for scheduled syncs, at minute resolution in UTC.
+ * Two ticks during the same matching minute (or the same matching hour for
+ * an hourly cron, etc.) produce the same key — that's what suppresses the
+ * duplicate fire when setInterval drifts or when shouldRun stays true across
+ * adjacent ticks. Different scheduled triggers (different minutes/hours/days)
+ * produce different keys, so sub-daily crons like `0 * * * *` actually fire
+ * hourly instead of being throttled to once-per-day.
+ */
+function cronTriggerKey(date: Date): string {
+  // `YYYY-MM-DDTHH:MM` (UTC). Slice is cheaper than formatting by hand and
+  // matches what `shouldRun` checks against (which also uses UTC fields).
+  return date.toISOString().slice(0, 16);
+}
 
 /**
  * Monotonic counter bumped every time a sync (incremental or full) completes.
@@ -73,20 +88,20 @@ export function startCron(): void {
   // Check every minute
   setInterval(async () => {
     const now = new Date();
-    const today = now.toISOString().split('T')[0];
+    const currentRun = cronTriggerKey(now);
 
     if (isRunning) return;
 
     // Check if it's time for a full sync (takes priority)
-    if (shouldRun(fullSchedule, now) && lastFullDate !== today) {
+    if (shouldRun(fullSchedule, now) && lastFullRun !== currentRun) {
       isRunning = true;
       console.log('[Cron] Starting scheduled FULL sync...');
       try {
         lastSyncResult = await runFullSync();
         recomputeStatsCache();
         recomputeGrowthCache();
-        lastFullDate = today;
-        lastIncrementalDate = today;
+        lastFullRun = currentRun;
+        lastIncrementalRun = currentRun;
         syncVersion++;
         console.log('[Cron] Full sync completed');
       } catch (err) {
@@ -97,14 +112,14 @@ export function startCron(): void {
     }
 
     // Check if it's time for an incremental sync
-    if (shouldRun(incrementalSchedule, now) && lastIncrementalDate !== today) {
+    if (shouldRun(incrementalSchedule, now) && lastIncrementalRun !== currentRun) {
       isRunning = true;
       console.log('[Cron] Starting scheduled incremental sync...');
       try {
         lastSyncResult = await runIncrementalSync();
         recomputeStatsCache();
         recomputeGrowthCache();
-        lastIncrementalDate = today;
+        lastIncrementalRun = currentRun;
         syncVersion++;
         console.log('[Cron] Incremental sync completed');
       } catch (err) {

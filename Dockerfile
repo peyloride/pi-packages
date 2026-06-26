@@ -22,7 +22,8 @@ EXPOSE 3000
 # Environment variables
 ENV PORT=3000
 ENV DB_PATH=/app/data/dashboard.db
-ENV SYNC_CRON="0 3 * * *"
+ENV SYNC_CRON="0 * * * *"
+ENV SYNC_FULL_CRON="0 3 * * *"
 
 # Run the server
 CMD ["nub", "backend/index.ts"]
