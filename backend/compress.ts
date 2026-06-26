@@ -122,5 +122,14 @@ export function compress() {
     }
 
     c.res = new Response(encoded, { status: res.status, headers: newHeaders });
+    // Hono's c.res setter re-applies headers from the original response onto
+    // the new one, so any header that existed before (like ETag) overwrites
+    // the value we set on newHeaders. Route the weak ETag + Vary through
+    // c.header() instead — it writes to the context layer, which Hono
+    // applies AFTER middleware and so actually takes effect.
+    if (etag && !etag.startsWith('W/')) {
+      c.header('ETag', `W/${etag}`, { append: false });
+    }
+    c.header('Vary', 'Accept-Encoding', { append: true });
   };
 }

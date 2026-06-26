@@ -80,53 +80,14 @@ export function getSyncVersion(): number {
 }
 
 export function startCron(): void {
-  const incrementalSchedule = parseCron(SYNC_CRON);
-  const fullSchedule = parseCron(SYNC_FULL_CRON);
   console.log(`[Cron] Incremental sync: ${SYNC_CRON}`);
   console.log(`[Cron] Full sync: ${SYNC_FULL_CRON}`);
 
-  // Check every minute
-  setInterval(async () => {
-    const now = new Date();
-    const currentRun = cronTriggerKey(now);
-
-    if (isRunning) return;
-
-    // Check if it's time for a full sync (takes priority)
-    if (shouldRun(fullSchedule, now) && lastFullRun !== currentRun) {
-      isRunning = true;
-      console.log('[Cron] Starting scheduled FULL sync...');
-      try {
-        lastSyncResult = await runFullSync();
-        recomputeStatsCache();
-        recomputeGrowthCache();
-        lastFullRun = currentRun;
-        lastIncrementalRun = currentRun;
-        syncVersion++;
-        console.log('[Cron] Full sync completed');
-      } catch (err) {
-        console.error('[Cron] Full sync failed:', err);
-      }
-      isRunning = false;
-      return;
-    }
-
-    // Check if it's time for an incremental sync
-    if (shouldRun(incrementalSchedule, now) && lastIncrementalRun !== currentRun) {
-      isRunning = true;
-      console.log('[Cron] Starting scheduled incremental sync...');
-      try {
-        lastSyncResult = await runIncrementalSync();
-        recomputeStatsCache();
-        recomputeGrowthCache();
-        lastIncrementalRun = currentRun;
-        syncVersion++;
-        console.log('[Cron] Incremental sync completed');
-      } catch (err) {
-        console.error('[Cron] Incremental sync failed:', err);
-      }
-      isRunning = false;
-    }
+  // Check every minute. The per-trigger dedup (lastFullRun / lastIncrementalRun
+  // vs cronTriggerKey) lives inside cronTick so the logic is testable without
+  // waiting for a real interval.
+  setInterval(() => {
+    void cronTick(new Date());
   }, 60000); // Check every minute
 }
 
@@ -158,4 +119,67 @@ export function isSyncRunning(): boolean {
 
 export function getLastSyncResult(): SyncResult | null {
   return lastSyncResult;
+}
+
+/**
+ * One timer-tick of the cron scheduler. Exported so tests can drive the full
+ * sync-trigger + dedup logic synchronously without waiting for the 60s
+ * setInterval. Returns the (possibly still-in-flight) promise so callers can
+ * await completion.
+ */
+export async function cronTick(now: Date): Promise<void> {
+  const incrementalSchedule = parseCron(SYNC_CRON);
+  const fullSchedule = parseCron(SYNC_FULL_CRON);
+  const currentRun = cronTriggerKey(now);
+
+  if (isRunning) return;
+
+  // Check if it's time for a full sync (takes priority)
+  if (shouldRun(fullSchedule, now) && lastFullRun !== currentRun) {
+    isRunning = true;
+    console.log('[Cron] Starting scheduled FULL sync...');
+    try {
+      lastSyncResult = await runFullSync();
+      recomputeStatsCache();
+      recomputeGrowthCache();
+      lastFullRun = currentRun;
+      lastIncrementalRun = currentRun;
+      syncVersion++;
+      console.log('[Cron] Full sync completed');
+    } catch (err) {
+      console.error('[Cron] Full sync failed:', err);
+    }
+    isRunning = false;
+    return;
+  }
+
+  // Check if it's time for an incremental sync
+  if (shouldRun(incrementalSchedule, now) && lastIncrementalRun !== currentRun) {
+    isRunning = true;
+    console.log('[Cron] Starting scheduled incremental sync...');
+    try {
+      lastSyncResult = await runIncrementalSync();
+      recomputeStatsCache();
+      recomputeGrowthCache();
+      lastIncrementalRun = currentRun;
+      syncVersion++;
+      console.log('[Cron] Incremental sync completed');
+    } catch (err) {
+      console.error('[Cron] Incremental sync failed:', err);
+    }
+    isRunning = false;
+  }
+}
+
+/**
+ * Reset all module-level cron state. Intended for tests only — lets each test
+ * start from a clean slate (no lingering last-run dedup, no isRunning flag,
+ * no syncVersion accumulation across tests).
+ */
+export function resetCronState(): void {
+  lastIncrementalRun = null;
+  lastFullRun = null;
+  isRunning = false;
+  lastSyncResult = null;
+  syncVersion = 0;
 }

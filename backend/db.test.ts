@@ -1,13 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import { getDb, initializeSchema, closeDb } from './db';
 
 describe('db.ts', () => {
-  let testDb: Database;
+  let testDb: DatabaseSync;
 
   beforeEach(() => {
     // Create in-memory database for testing
-    testDb = new Database(':memory:');
+    testDb = new DatabaseSync(':memory:');
     initializeSchema(testDb);
   });
 
@@ -20,14 +21,14 @@ describe('db.ts', () => {
       const result = testDb.prepare(`
         SELECT name FROM sqlite_master WHERE type='table' AND name='packages'
       `).get() as { name: string } | undefined;
-      expect(result?.name).toBe('packages');
+      assert.equal(result?.name, 'packages');
     });
 
     it('should create daily_downloads table', () => {
       const result = testDb.prepare(`
         SELECT name FROM sqlite_master WHERE type='table' AND name='daily_downloads'
       `).get() as { name: string } | undefined;
-      expect(result?.name).toBe('daily_downloads');
+      assert.equal(result?.name, 'daily_downloads');
     });
 
     it('should create indexes', () => {
@@ -35,46 +36,59 @@ describe('db.ts', () => {
         SELECT name FROM sqlite_master WHERE type='index'
       `).all() as Array<{ name: string }>;
       const indexNames = indexes.map(i => i.name);
-      expect(indexNames).toContain('idx_downloads_package');
-      expect(indexNames).toContain('idx_downloads_date');
-      expect(indexNames).toContain('idx_packages_first_seen');
-      expect(indexNames).toContain('idx_packages_last_publish');
+      assert.ok(indexNames.includes('idx_downloads_package'));
+      assert.ok(indexNames.includes('idx_downloads_date'));
+      assert.ok(indexNames.includes('idx_packages_first_seen'));
+      assert.ok(indexNames.includes('idx_packages_last_publish'));
     });
 
     it('should have correct columns in packages table', () => {
       const columns = testDb.prepare('PRAGMA table_info(packages)').all() as Array<{ name: string }>;
       const columnNames = columns.map(c => c.name);
-      expect(columnNames).toContain('name');
-      expect(columnNames).toContain('description');
-      expect(columnNames).toContain('version');
-      expect(columnNames).toContain('keywords');
-      expect(columnNames).toContain('publisher');
-      expect(columnNames).toContain('github_url');
-      expect(columnNames).toContain('npm_url');
-      expect(columnNames).toContain('first_seen');
-      expect(columnNames).toContain('last_publish');
+      assert.ok(columnNames.includes('name'));
+      assert.ok(columnNames.includes('description'));
+      assert.ok(columnNames.includes('version'));
+      assert.ok(columnNames.includes('keywords'));
+      assert.ok(columnNames.includes('publisher'));
+      assert.ok(columnNames.includes('github_url'));
+      assert.ok(columnNames.includes('npm_url'));
+      assert.ok(columnNames.includes('first_seen'));
+      assert.ok(columnNames.includes('last_publish'));
     });
 
     it('should have correct columns in daily_downloads table', () => {
       const columns = testDb.prepare('PRAGMA table_info(daily_downloads)').all() as Array<{ name: string }>;
       const columnNames = columns.map(c => c.name);
-      expect(columnNames).toContain('package_name');
-      expect(columnNames).toContain('date');
-      expect(columnNames).toContain('downloads');
+      assert.ok(columnNames.includes('package_name'));
+      assert.ok(columnNames.includes('date'));
+      assert.ok(columnNames.includes('downloads'));
     });
 
     it('should create sync_meta table', () => {
       const result = testDb.prepare(`
         SELECT name FROM sqlite_master WHERE type='table' AND name='sync_meta'
       `).get() as { name: string } | undefined;
-      expect(result?.name).toBe('sync_meta');
+      assert.equal(result?.name, 'sync_meta');
     });
 
     it('should have correct columns in sync_meta table', () => {
       const columns = testDb.prepare('PRAGMA table_info(sync_meta)').all() as Array<{ name: string }>;
       const columnNames = columns.map(c => c.name);
-      expect(columnNames).toContain('key');
-      expect(columnNames).toContain('value');
+      assert.ok(columnNames.includes('key'));
+      assert.ok(columnNames.includes('value'));
+    });
+
+    it('should add materialized growth columns via idempotent migration', () => {
+      const columns = testDb.prepare('PRAGMA table_info(packages)').all() as Array<{ name: string }>;
+      const columnNames = columns.map(c => c.name);
+      assert.ok(columnNames.includes('daily_growth'));
+      assert.ok(columnNames.includes('weekly_growth'));
+      assert.ok(columnNames.includes('monthly_growth'));
+
+      // Re-running initializeSchema on an already-migrated DB must be a no-op
+      // (no "duplicate column" error). This mirrors db.ts's runtime behavior
+      // where initializeSchema runs on every getDb() call.
+      assert.doesNotThrow(() => initializeSchema(testDb));
     });
   });
 
@@ -93,8 +107,8 @@ describe('db.ts', () => {
       });
 
       const pkg = testDb.prepare('SELECT * FROM packages WHERE name = $name').get({ $name: 'test-package' });
-      expect(pkg).toBeDefined();
-      expect((pkg as any).description).toBe('A test package');
+      assert.ok(pkg);
+      assert.equal((pkg as { description: string }).description, 'A test package');
     });
 
     it('should update a package on conflict', () => {
@@ -122,7 +136,7 @@ describe('db.ts', () => {
       });
 
       const pkg = testDb.prepare('SELECT * FROM packages WHERE name = $name').get({ $name: 'test-package' });
-      expect((pkg as any).description).toBe('Updated');
+      assert.equal((pkg as { description: string }).description, 'Updated');
     });
 
     it('should delete a package', () => {
@@ -133,7 +147,9 @@ describe('db.ts', () => {
       testDb.prepare('DELETE FROM packages WHERE name = $name').run({ $name: 'to-delete' });
 
       const pkg = testDb.prepare('SELECT * FROM packages WHERE name = $name').get({ $name: 'to-delete' });
-      expect(pkg).toBeNull();
+      // node:sqlite's Statement.get() returns undefined when no row matches
+      // (bun:sqlite returned null). Either "no row" answer is acceptable.
+      assert.equal(pkg, undefined);
     });
   });
 
@@ -156,8 +172,8 @@ describe('db.ts', () => {
       });
 
       const downloads = testDb.prepare('SELECT * FROM daily_downloads WHERE package_name = $name').all({ $name: 'test-pkg' });
-      expect(downloads).toHaveLength(1);
-      expect((downloads[0] as any).downloads).toBe(100);
+      assert.equal(downloads.length, 1);
+      assert.equal((downloads[0] as { downloads: number }).downloads, 100);
     });
 
     it('should aggregate downloads correctly', () => {
@@ -174,7 +190,7 @@ describe('db.ts', () => {
         SELECT SUM(downloads) as total FROM daily_downloads
         WHERE package_name = $name AND date GLOB '[0-9][0-9][0-9][0-9]*'
       `).get({ $name: 'test-pkg' }) as { total: number };
-      expect(total.total).toBe(91); // 10+11+12+13+14+15+16
+      assert.equal(total.total, 91); // 10+11+12+13+14+15+16
     });
   });
 
@@ -182,21 +198,21 @@ describe('db.ts', () => {
     it('should close the database connection', () => {
       // Get a database connection first
       const database = getDb();
-      expect(database).toBeDefined();
-      
+      assert.ok(database);
+
       // Close it
       closeDb();
-      
+
       // After closing, getDb should create a new connection
       const database2 = getDb();
-      expect(database2).toBeDefined();
+      assert.ok(database2);
     });
 
     it('should handle multiple close calls', () => {
       // Close when already closed should not throw
       closeDb();
       closeDb();
-      expect(true).toBe(true);
+      assert.ok(true);
     });
   });
 });
