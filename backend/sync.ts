@@ -260,6 +260,21 @@ export function diffPackages(packages: NpmSearchResult[]): DiffResult {
 // =============================================================================
 
 /**
+ * Type guard for npm /range response entries.
+ *
+ * The contract is `{ package, start, end, downloads: [{ day, downloads }] }`
+ * but under rate-limit pressure npm can return 200 OK with a non-standard body
+ * (e.g. an error envelope like `{ "error": "..." }` after a 429 retry). Treat
+ * any value that doesn't match the expected shape as "no data" rather than
+ * throwing — one malformed package shouldn't kill the whole sync.
+ */
+function isRangeDownloads(value: unknown): value is NpmRangeDownloadsResponse {
+  if (value === null || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return Array.isArray(v.downloads);
+}
+
+/**
  * Execute one bulk /range request covering up to `BATCH_SIZE` packages.
  * Returns Map<name, DownloadData> for every package npm responded to
  * (including zero-traffic ones — caller filters at DB-write time if needed).
@@ -280,11 +295,19 @@ async function executeBulkFetch(
   const response = await npmFetch(rangeUrl);
   if (!response.ok) return result;
 
-  const data = await response.json() as { [key: string]: NpmRangeDownloadsResponse | null };
-  for (const [pkgName, pkgData] of Object.entries(data)) {
-    if (!pkgData) continue;
+  const data = await response.json() as unknown;
+  // Guard the top-level body too: npm can return 200 with `null` or a
+  // non-object body under rate-limit pressure, and Object.entries(null)
+  // throws on its own.
+  if (!data || typeof data !== 'object') return result;
+  for (const [pkgName, pkgData] of Object.entries(data as Record<string, unknown>)) {
+    // Skip null entries (package not found) AND any malformed body shapes
+    // (e.g. an `{ error: "..." }` envelope npm sometimes returns under
+    // rate-limit pressure). See isRangeDownloads for the rationale.
+    if (!isRangeDownloads(pkgData)) continue;
     const daily = new Map<string, number>();
     for (const day of pkgData.downloads) {
+      if (!day || typeof day.day !== 'string' || typeof day.downloads !== 'number') continue;
       daily.set(day.day, day.downloads);
     }
     result.set(pkgName, { daily, ...aggregateStats(daily, monthStart, weekAgo, twoWeeksAgo) });
@@ -309,9 +332,11 @@ async function executeSingleFetch(
     const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${encodeURIComponent(name)}`;
     const response = await fetch(rangeUrl);
     if (!response.ok) return null;
-    const data = await response.json() as NpmRangeDownloadsResponse;
+    const data = await response.json() as unknown;
+    if (!isRangeDownloads(data)) return null;
     const daily = new Map<string, number>();
     for (const day of data.downloads) {
+      if (!day || typeof day.day !== 'string' || typeof day.downloads !== 'number') continue;
       daily.set(day.day, day.downloads);
     }
     const stats = aggregateStats(daily, monthStart, weekAgo, twoWeeksAgo);
@@ -567,16 +592,29 @@ async function fetchAndPersistIncrementalDownloads(
   // Fan all tasks through one shared worker pool — npm sees at most
   // DOWNLOAD_CONCURRENCY requests in flight at once, regardless of which
   // group each task belongs to.
+  //
+  // Each task is isolated: a thrown error (transient npm quirk, shape change,
+  // network blip) returns an empty map rather than failing pMap's Promise.all,
+  // which would otherwise lose ALL the work from the other concurrent tasks.
+  // We log so the failure is visible without taking down the sync.
   const taskResults = await pMap(tasks, DOWNLOAD_CONCURRENCY, async (task): Promise<{ map: Map<string, DownloadData>; fullRange: boolean }> => {
-    let map: Map<string, DownloadData>;
-    if (task.kind === 'bulk') {
-      map = await executeBulkFetch(task.names, task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
-    } else {
-      const data = await executeSingleFetch(task.names[0], task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
-      map = new Map();
-      if (data) map.set(task.names[0], data);
+    try {
+      let map: Map<string, DownloadData>;
+      if (task.kind === 'bulk') {
+        map = await executeBulkFetch(task.names, task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
+      } else {
+        const data = await executeSingleFetch(task.names[0], task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
+        map = new Map();
+        if (data) map.set(task.names[0], data);
+      }
+      return { map, fullRange: task.fullRange };
+    } catch (err) {
+      const label = task.kind === 'bulk'
+        ? `bulk (${task.names.length} pkgs, ${task.rangeStart}:${task.rangeEnd})`
+        : `single ${task.names[0]} (${task.rangeStart}:${task.rangeEnd})`;
+      console.warn(`[Sync] Downloads task failed (${label}) — skipping:`, err instanceof Error ? err.message : err);
+      return { map: new Map(), fullRange: task.fullRange };
     }
-    return { map, fullRange: task.fullRange };
   });
 
   // Single transaction: node:sqlite is sync on one shared connection, so we
