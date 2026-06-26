@@ -4,8 +4,8 @@ RUN npm install -g @nubjs/nub
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json ./
+# Copy package files (lockfile required for --frozen-lockfile)
+COPY package.json lock.yaml ./
 
 # Install dependencies
 RUN nub install --frozen-lockfile
