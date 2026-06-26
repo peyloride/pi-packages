@@ -14,6 +14,10 @@
 
 import { getDb } from './db';
 
+// Must match backend/index.ts. Duplicated here rather than imported to avoid a
+// cycle (index.ts imports from stats.ts at module init).
+const GROWTH_SMOOTHING_PRIOR = 10;
+
 export interface StatsCache {
   total_packages: number;
   total_weekly_downloads: number;
@@ -41,20 +45,23 @@ export function recomputeStatsCache(): StatsCache {
     SELECT SUM(downloads) as total FROM daily_downloads WHERE date >= date('now', '-30 days')
   `).get() as { total: number | null }).total || 0;
 
+  // Bayesian-smoothed growth so the ecosystem average is consistent with the
+  // per-package growth_percent. Packages with no baseline (last_week = 0) are
+  // excluded (AVG ignores the NULL); the k prior dampens small-baseline noise.
   const avgGrowth = (db.prepare(`
-    SELECT AVG(growth) as avg
+    SELECT AVG(CASE WHEN last_week > 0
+             THEN ((this_week + ${GROWTH_SMOOTHING_PRIOR}) * 100.0 /
+                   (last_week + ${GROWTH_SMOOTHING_PRIOR})) - 100
+             ELSE NULL
+           END) as avg
     FROM (
       SELECT
-        (this_week - last_week) * 100.0 / NULLIF(last_week, 0) as growth
-      FROM (
-        SELECT
-          SUM(CASE WHEN date >= date('now', '-7 days') THEN downloads ELSE 0 END) as this_week,
-          SUM(CASE WHEN date >= date('now', '-14 days') AND date < date('now', '-7 days') THEN downloads ELSE 0 END) as last_week
-        FROM daily_downloads
-        GROUP BY package_name
-      )
-      WHERE last_week > 0
+        SUM(CASE WHEN date >= date('now', '-7 days') THEN downloads ELSE 0 END) as this_week,
+        SUM(CASE WHEN date >= date('now', '-14 days') AND date < date('now', '-7 days') THEN downloads ELSE 0 END) as last_week
+      FROM daily_downloads
+      GROUP BY package_name
     )
+    WHERE this_week > 0 OR last_week > 0
   `).get() as { avg: number | null }).avg;
 
   const stats: StatsCache = {

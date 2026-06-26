@@ -92,6 +92,33 @@ const PERIOD_DAYS: Record<Period, number> = {
   monthly: 30,
 };
 
+// -----------------------------------------------------------------------------
+// Growth-percent tuning constants.
+//
+// GROWTH_SMOOTHING_PRIOR (k): Bayesian prior added to both numerator and
+// denominator of the growth rate, i.e. growth = (this + k) / (last + k) - 1.
+// Dampens small-numerator noise (1 -> 39 was +3800%, becomes +345%) while
+// leaving real breakouts (1000 -> 3000) essentially unchanged. Also removes
+// the div-by-zero special case (denominator is always ≥ k), so packages with
+// no baseline get a finite, honest number instead of a synthetic 100.
+//
+// GROWTH_DISPLAY_CAP: maximum magnitude rendered to clients. The sort uses
+// the true value (a +5000% package still ranks above +500%); only the
+// displayed badge is clamped so clients don't show +25900%.
+//
+// TRENDING_MIN_DOWNLOADS: packages below this volume in the current period
+// are excluded from the trending ranking. Cuts tiny-baseline noise from the
+// trending tab (a 1 -> 5 package no longer dominates) without affecting the
+// card stats for those packages when viewed via other tabs.
+// -----------------------------------------------------------------------------
+const GROWTH_SMOOTHING_PRIOR = 10;
+const GROWTH_DISPLAY_CAP = 1000;
+const TRENDING_MIN_DOWNLOADS: Record<Period, number> = {
+  daily: 10,
+  weekly: 50,
+  monthly: 200,
+};
+
 function parsePeriod(raw: string | null): Period {
   if (raw && (VALID_PERIODS as readonly string[]).includes(raw)) return raw as Period;
   return 'weekly';
@@ -171,9 +198,14 @@ app.get('/api/packages', async (c) => {
     // Build sort order and extra filter
     let orderBy = '';
     let extraFilter = '';
+    let havingPart = '';
 
     switch (sort) {
       case 'trending':
+        // Floor on absolute volume so tiny-baseline packages (1 -> 5 with
+        // +400%) don't dominate the trending tab. The card still shows their
+        // stats; they just don't rank on trending.
+        havingPart = `HAVING COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) >= ${TRENDING_MIN_DOWNLOADS[period]}`;
         orderBy = `ORDER BY growth_percent DESC NULLS LAST`;
         break;
       case 'new':
@@ -192,15 +224,42 @@ app.get('/api/packages', async (c) => {
     // Build WHERE clause
     const wherePart = `1=1 ${searchCondition} ${extraFilter}`;
 
-    // Get total count
-    const countQuery = `SELECT COUNT(*) as total FROM packages p WHERE ${wherePart}`;
+    // Get total count. Trending needs the volume floor applied to the count
+    // too, otherwise pagination total would over-report (and pages beyond the
+    // floor would return empty).
+    let countQuery: string;
+    if (sort === 'trending') {
+      countQuery = `
+        SELECT COUNT(*) as total FROM (
+          SELECT p.name
+          FROM packages p
+          LEFT JOIN daily_downloads d ON p.name = d.package_name
+          WHERE ${wherePart}
+          GROUP BY p.name
+          ${havingPart}
+        )
+      `;
+    } else {
+      countQuery = `SELECT COUNT(*) as total FROM packages p WHERE ${wherePart}`;
+    }
     const countResult = db.prepare(countQuery).get() as { total: number };
 
     // Previous period for growth calculation
     const prevPeriodStart = `date('now', '-${periodDays * 2} days')`;
     const prevPeriodEnd = `date('now', '-${periodDays} days')`;
 
-    // Get packages with download stats for the selected period
+    // Get packages with download stats for the selected period.
+    //
+    // growth_percent: Bayesian-smoothed when a baseline exists
+    //   growth = (this + k) / (last + k) - 1, applied only when last > 0.
+    // The +k dampens small-baseline noise (1 -> 39 was +3800%, becomes +345%)
+    // and removes the div-by-zero case. When last = 0 (no baseline — the
+    // package is new this period) we return NULL honestly instead of a
+    // synthetic 100 (or a capped gigantic percent). Trending sorts these to
+    // the bottom via NULLS LAST, so genuine breakouts rank on top.
+    //
+    // The displayed value is clamped to ±GROWTH_DISPLAY_CAP in JS; the sort
+    // uses the true value.
     const query = `
       SELECT
         p.name,
@@ -217,13 +276,15 @@ app.get('/api/packages', async (c) => {
         COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) as monthly_downloads,
         CASE
           WHEN COALESCE(SUM(CASE WHEN d.date >= ${prevPeriodStart} AND d.date < ${prevPeriodEnd} THEN d.downloads ELSE 0 END), 0) > 0
-          THEN (COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN d.date >= ${prevPeriodStart} AND d.date < ${prevPeriodEnd} THEN d.downloads ELSE 0 END), 0)) * 100.0 / COALESCE(SUM(CASE WHEN d.date >= ${prevPeriodStart} AND d.date < ${prevPeriodEnd} THEN d.downloads ELSE 0 END), 0)
-          ELSE CASE WHEN COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) > 0 THEN 100 ELSE NULL END
+          THEN ((COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) + ${GROWTH_SMOOTHING_PRIOR}) * 100.0 /
+                (COALESCE(SUM(CASE WHEN d.date >= ${prevPeriodStart} AND d.date < ${prevPeriodEnd} THEN d.downloads ELSE 0 END), 0) + ${GROWTH_SMOOTHING_PRIOR})) - 100
+          ELSE NULL
         END as growth_percent
       FROM packages p
       LEFT JOIN daily_downloads d ON p.name = d.package_name
       WHERE ${wherePart}
       GROUP BY p.name
+      ${havingPart}
       ${orderBy}
       LIMIT ? OFFSET ?
     `;
@@ -256,11 +317,15 @@ app.get('/api/packages', async (c) => {
 
     // Enrich with sparkline + format
     const packagesWithGrowth = packages.map(pkg => {
-      let growth = null;
-      if (pkg.growth_percent !== null) {
-        growth = Math.round(pkg.growth_percent * 10) / 10;
-      } else if (pkg.period_downloads > 0) {
-        growth = 100;
+      // growth_percent is never NULL with Bayesian smoothing (denominator is
+      // always ≥ k > 0), so the old "else if period_downloads > 0 -> 100" branch
+      // is gone. Display is clamped to ±GROWTH_DISPLAY_CAP; the sort uses the
+      // true value so genuine breakouts still rank correctly.
+      let growth: number | null = pkg.growth_percent !== null
+        ? Math.round(pkg.growth_percent * 10) / 10
+        : null;
+      if (growth !== null) {
+        growth = Math.max(-GROWTH_DISPLAY_CAP, Math.min(GROWTH_DISPLAY_CAP, growth));
       }
 
       const sparkline = sparklineMap.get(pkg.name) || [];
@@ -289,10 +354,9 @@ app.get('/api/packages', async (c) => {
       };
     });
 
-    // Sort by growth if trending (already in SQL, but ensure proper null handling)
-    if (sort === 'trending') {
-      packagesWithGrowth.sort((a, b) => (b.growth || -Infinity) - (a.growth || -Infinity));
-    }
+    // Trending sort is handled entirely in SQL now (ORDER BY growth_percent
+    // DESC NULLS LAST on the smoothed value). The previous JS re-sort was
+    // redundant and disagreed with the SQL sort on null handling.
 
     const resultBody = {
       packages: packagesWithGrowth,
@@ -359,13 +423,14 @@ app.get('/api/packages/:name', async (c) => {
       })
       .reduce((sum, d) => sum + d.downloads, 0);
 
-    let growth = null;
-    if (lastWeekDownloads > 0) {
-      growth = ((weeklyDownloads - lastWeekDownloads) / lastWeekDownloads) * 100;
-      growth = Math.round(growth * 10) / 10;
-    } else if (weeklyDownloads > 0) {
-      growth = 100;
-    }
+    // Bayesian-smoothed weekly growth: (this + k) / (last + k) - 1. Same
+    // formula as the list endpoint so a package's growth badge is consistent
+    // across views. No div-by-zero special-case (denominator is always ≥ k);
+    // display is clamped to ±GROWTH_DISPLAY_CAP.
+    let growth = ((weeklyDownloads + GROWTH_SMOOTHING_PRIOR) * 100.0 /
+                  (lastWeekDownloads + GROWTH_SMOOTHING_PRIOR)) - 100;
+    growth = Math.round(growth * 10) / 10;
+    growth = Math.max(-GROWTH_DISPLAY_CAP, Math.min(GROWTH_DISPLAY_CAP, growth));
 
     // Generate sparkline data (7 days)
     const sparkline = downloads.slice(-7).map(d => d.downloads);
