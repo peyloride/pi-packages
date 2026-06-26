@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { cors } from 'hono/cors';
+import { etag } from 'hono/etag';
 import { readFileSync } from 'node:fs';
 import { getDb, closeDb } from './db';
 import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
@@ -14,6 +15,15 @@ startCron();
 
 // CORS for local development
 app.use('/*', cors());
+
+// ETag for API responses: lets browsers/CDNs revalidate with If-None-Match
+// and get a free 304 (no body) when the payload is unchanged.
+app.use('/api/*', etag());
+
+// Cache-Control guidance for API JSON. Data changes only on sync (every ~4h),
+// so browsers can reuse for 60s (matches server cache TTL) and shared/CDN
+// caches for 300s. ETag still allows revalidation after expiry.
+const API_CACHE_CONTROL = 'public, max-age=60, s-maxage=300';
 
 // -----------------------------------------------------------------------------
 // In-memory response cache for expensive GET endpoints.
@@ -126,7 +136,10 @@ app.get('/api/packages', async (c) => {
     if (cached) {
       return new Response(cached.body, {
         status: cached.status,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': API_CACHE_CONTROL,
+        },
       });
     }
 
@@ -264,7 +277,7 @@ app.get('/api/packages', async (c) => {
     const serialized = JSON.stringify(resultBody);
     cacheSet(cacheKey(['packages', sort, period, search, String(limit), String(offset)]), serialized, 200);
 
-    return c.json(resultBody);
+    return c.json(resultBody, 200, { 'cache-control': API_CACHE_CONTROL });
   } catch (err) {
     console.error('[API] Error fetching packages:', err);
     return c.json({ error: 'Failed to fetch packages' }, 500);
@@ -358,7 +371,10 @@ app.get('/api/stats', async (c) => {
     if (cached) {
       return new Response(cached.body, {
         status: cached.status,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': API_CACHE_CONTROL,
+        },
       });
     }
 
@@ -414,7 +430,7 @@ app.get('/api/stats', async (c) => {
     const serialized = JSON.stringify(resultBody);
     cacheSet(key, serialized, 200);
 
-    return c.json(resultBody);
+    return c.json(resultBody, 200, { 'cache-control': API_CACHE_CONTROL });
   } catch (err) {
     console.error('[API] Error fetching stats:', err);
     return c.json({ error: 'Failed to fetch stats' }, 500);
