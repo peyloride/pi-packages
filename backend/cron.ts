@@ -51,6 +51,17 @@ let lastFullDate: string | null = null;
 let isRunning = false;
 let lastSyncResult: SyncResult | null = null;
 
+/**
+ * Monotonic counter bumped every time a sync (incremental or full) completes.
+ * Lets API response caches key off the data version so they invalidate the
+ * instant new data lands — no stale window, no polling.
+ */
+let syncVersion = 0;
+
+export function getSyncVersion(): number {
+  return syncVersion;
+}
+
 export function startCron(): void {
   const incrementalSchedule = parseCron(SYNC_CRON);
   const fullSchedule = parseCron(SYNC_FULL_CRON);
@@ -72,6 +83,7 @@ export function startCron(): void {
         lastSyncResult = await runFullSync();
         lastFullDate = today;
         lastIncrementalDate = today;
+        syncVersion++;
         console.log('[Cron] Full sync completed');
       } catch (err) {
         console.error('[Cron] Full sync failed:', err);
@@ -87,6 +99,7 @@ export function startCron(): void {
       try {
         lastSyncResult = await runIncrementalSync();
         lastIncrementalDate = today;
+        syncVersion++;
         console.log('[Cron] Incremental sync completed');
       } catch (err) {
         console.error('[Cron] Incremental sync failed:', err);

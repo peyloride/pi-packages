@@ -4,7 +4,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { cors } from 'hono/cors';
 import { readFileSync } from 'node:fs';
 import { getDb, closeDb } from './db';
-import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult } from './cron';
+import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
 
 const app = new Hono();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -14,6 +14,47 @@ startCron();
 
 // CORS for local development
 app.use('/*', cors());
+
+// -----------------------------------------------------------------------------
+// In-memory response cache for expensive GET endpoints.
+//
+// The underlying data only changes when a sync completes (every ~4h), so we
+// cache JSON responses keyed by the sync version + full query string. A sync
+// completion bumps syncVersion (see cron.ts), so stale entries miss instantly
+// — no stale window. The TTL is a safety net + bound on cache size.
+// -----------------------------------------------------------------------------
+const CACHE_TTL_MS = 60_000; // 60s safety net
+const responseCache = new Map<string, { body: string; status: number; storedAt: number }>();
+
+/**
+ * Build a cache key that incorporates the current sync data version.
+ * If the version changed (sync completed), the key differs and the old entry
+ * is simply not hit (it expires by TTL or gets evicted on insertion below).
+ */
+function cacheKey(parts: string[]): string {
+  return `${getSyncVersion()}:${parts.join('|')}`;
+}
+
+function cacheGet(key: string): { body: string; status: number } | null {
+  const hit = responseCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.storedAt > CACHE_TTL_MS) {
+    responseCache.delete(key);
+    return null;
+  }
+  return { body: hit.body, status: hit.status };
+}
+
+function cacheSet(key: string, body: string, status: number): void {
+  // Bound cache size to avoid unbounded growth under a varied query string
+  // (e.g. search params, pagination offsets).
+  if (responseCache.size > 512) {
+    // Evict the oldest entry (Map preserves insertion order)
+    const oldest = responseCache.keys().next().value;
+    if (oldest) responseCache.delete(oldest);
+  }
+  responseCache.set(key, { body, status, storedAt: Date.now() });
+}
 
 // Valid values for the period query param
 const VALID_PERIODS = ['daily', 'weekly', 'monthly'] as const;
@@ -71,14 +112,27 @@ function resolvePublisher(publisher: string | null, githubUrl: string | null): {
  */
 app.get('/api/packages', async (c) => {
   try {
-    const db = getDb();
     const sort = c.req.query('sort') || 'popular';
     const period = parsePeriod(c.req.query('period'));
-    const periodDays = PERIOD_DAYS[period];
-    const periodLabel = period === 'daily' ? 'day' : period === 'weekly' ? 'week' : 'month';
     const search = c.req.query('search') || '';
     const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100);
     const offset = parseInt(c.req.query('offset') || '0', 10);
+
+    // Response cache: skip the DB entirely on a hit. Data only changes between
+    // syncs, so the cache key (which includes syncVersion) stays stable across
+    // a sync cycle.
+    const key = cacheKey(['packages', sort, period, search, String(limit), String(offset)]);
+    const cached = cacheGet(key);
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    }
+
+    const db = getDb();
+    const periodDays = PERIOD_DAYS[period];
+    const periodLabel = period === 'daily' ? 'day' : period === 'weekly' ? 'week' : 'month';
 
     // Build search condition
     const searchCondition = search
@@ -195,7 +249,7 @@ app.get('/api/packages', async (c) => {
       packagesWithGrowth.sort((a, b) => (b.growth || -Infinity) - (a.growth || -Infinity));
     }
 
-    return c.json({
+    const resultBody = {
       packages: packagesWithGrowth,
       period,
       pagination: {
@@ -204,7 +258,13 @@ app.get('/api/packages', async (c) => {
         offset,
         hasMore: offset + limit < countResult.total,
       },
-    });
+    };
+
+    // Cache the serialized response (invalidates automatically on sync complete)
+    const serialized = JSON.stringify(resultBody);
+    cacheSet(cacheKey(['packages', sort, period, search, String(limit), String(offset)]), serialized, 200);
+
+    return c.json(resultBody);
   } catch (err) {
     console.error('[API] Error fetching packages:', err);
     return c.json({ error: 'Failed to fetch packages' }, 500);
@@ -291,6 +351,17 @@ app.get('/api/packages/:name', async (c) => {
  */
 app.get('/api/stats', async (c) => {
   try {
+    // Response cache: stats is the most expensive endpoint (3 aggregate
+    // queries scanning daily_downloads), and the data only changes on sync.
+    const key = cacheKey(['stats']);
+    const cached = cacheGet(key);
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    }
+
     const db = getDb();
 
     const totalPackages = db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number };
@@ -329,7 +400,7 @@ app.get('/api/stats', async (c) => {
     // Get last sync timestamp from sync_meta
     const syncMetaRow = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('last_incremental_sync') as { value: string } | undefined;
 
-    return c.json({
+    const resultBody = {
       total_packages: totalPackages.count,
       total_weekly_downloads: totalWeeklyDownloads.total || 0,
       total_monthly_downloads: totalMonthlyDownloads.total || 0,
@@ -338,7 +409,12 @@ app.get('/api/stats', async (c) => {
       next_sync: nextSyncTime?.toISOString() || null,
       sync_running: isSyncRunning(),
       last_sync_mode: lastResult?.mode || null,
-    });
+    };
+
+    const serialized = JSON.stringify(resultBody);
+    cacheSet(key, serialized, 200);
+
+    return c.json(resultBody);
   } catch (err) {
     console.error('[API] Error fetching stats:', err);
     return c.json({ error: 'Failed to fetch stats' }, 500);
