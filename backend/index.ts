@@ -460,8 +460,15 @@ app.get('/api/stats', async (c) => {
     // Get last sync timestamp from sync_meta
     const syncMetaRow = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('last_incremental_sync') as { value: string } | undefined;
 
+    // total_packages: always live from the DB. The cached value can go stale
+    // after an external write to `packages` that doesn't recompute the stats
+    // cache (e.g. a manual `nub run sync` from the CLI, or any future direct
+    // write). COUNT(*) on this table is sub-millisecond, so we skip the cache
+    // for this one field and trust it for everything else.
+    const liveTotal = (db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number }).count;
+
     const resultBody = {
-      total_packages: stats.total_packages,
+      total_packages: liveTotal,
       total_weekly_downloads: stats.total_weekly_downloads,
       total_monthly_downloads: stats.total_monthly_downloads,
       average_growth: stats.average_growth,

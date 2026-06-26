@@ -27,6 +27,7 @@ let pagination;
 const packagesEl = document.getElementById('packages');
 const paginationEl = document.getElementById('pagination');
 const totalCountEl = document.getElementById('total-count');
+const syncStatusEl = document.getElementById('sync-status');
 const searchInput = document.getElementById('search');
 const sortFilters = document.querySelectorAll('.sort-group .filter');
 const periodButtons = document.querySelectorAll('.period-group .period');
@@ -123,7 +124,13 @@ async function loadPackages() {
     const data = await response.json();
     
     totalCount = data.pagination?.total || data.packages.length;
-    totalCountEl.textContent = formatNumber(totalCount);
+    // NOTE: `totalCountEl` (the badge in the topbar) is intentionally NOT
+    // updated here. It shows the absolute package count, sourced from
+    // /api/stats.total_packages (a live COUNT(*) in the backend). Updating
+    // it with the per-filter pagination.total here would briefly flash a
+    // wrong number on every sort/filter change before /api/stats overwrites
+    // it — and the two values are different (e.g. trending filter excludes
+    // packages with insufficient download history).
     
     if (data.packages.length === 0) {
       packagesEl.innerHTML = '';
@@ -193,15 +200,59 @@ function renderPagination() {
   });
 }
 
-// Load stats
+// Load stats — populates the "last sync" indicator in the topbar AND sets the
+// absolute package count in the badge. /api/stats.total_packages is a live
+// COUNT(*) in the backend, so this is correct immediately after any data
+// write (no stale-cache window). The 60s setInterval refresh keeps the
+// relative time and count current while the page stays open.
 async function loadStats() {
   try {
     const response = await fetch('/api/stats');
     const stats = await response.json();
     
     totalCountEl.textContent = formatNumber(stats.total_packages);
+    updateSyncStatus(stats);
   } catch (err) {
     console.error('Failed to load stats:', err);
     totalCountEl.textContent = '—';
+    if (syncStatusEl) {
+      syncStatusEl.textContent = 'sync unavailable';
+      syncStatusEl.dataset.state = 'never';
+    }
   }
 }
+
+/**
+ * Render the "Synced Xh ago" / "Syncing…" / "Never synced" indicator.
+ * Reads three fields from /api/stats:
+ *   - sync_running: bool — show a pulsing dot + "syncing…"
+ *   - last_sync: ISO string — show relative time since last successful sync
+ *   - both null — "never synced"
+ */
+function updateSyncStatus(stats) {
+  if (!syncStatusEl) return;
+
+  if (stats.sync_running) {
+    syncStatusEl.textContent = 'syncing…';
+    syncStatusEl.dataset.state = 'syncing';
+    syncStatusEl.title = 'Sync in progress';
+    return;
+  }
+
+  if (!stats.last_sync) {
+    syncStatusEl.textContent = 'never synced';
+    syncStatusEl.dataset.state = 'never';
+    syncStatusEl.title = 'No sync has run yet';
+    return;
+  }
+
+  const synced = timeAgo(stats.last_sync);
+  syncStatusEl.textContent = `synced ${synced}`;
+  syncStatusEl.dataset.state = 'synced';
+  syncStatusEl.title = `Last sync: ${new Date(stats.last_sync).toLocaleString()}` +
+    (stats.last_sync_mode ? ` (${stats.last_sync_mode})` : '');
+}
+
+// Refresh the sync indicator every 60s so "2m ago" doesn't go stale while the
+// page is open. /api/stats is cached server-side for 60s, so this is cheap.
+setInterval(loadStats, 60_000);
