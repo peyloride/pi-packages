@@ -7,6 +7,7 @@ const RATE_LIMIT_DELAY = 500; // 500ms between requests (npm registry rate limit
 const MAX_RETRIES = 5; // Max retries on transient errors (429, 5xx)
 const RETRY_BASE_DELAY = 2000; // 2s base for exponential backoff
 const BATCH_SIZE = 128; // Packages per bulk download request (npm limit for /range)
+const DOWNLOAD_CONCURRENCY = 8; // Max concurrent npm downloads API requests
 const SYNC_META_KEY = 'last_incremental_sync'; // Key in sync_meta table
 
 // =============================================================================
@@ -76,6 +77,47 @@ function fmt(d: Date): string {
 
 function isScopedPackage(name: string): boolean {
   return name.startsWith('@');
+}
+
+/**
+ * Run an async mapper over `items` with at most `limit` concurrent invocations.
+ * Preserves input order in the returned array. `fn` may throw; the rejection
+ * propagates immediately and abandons remaining work.
+ */
+async function pMap<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Aggregate weekly / monthly / last-week download totals from a daily map.
+ * `monthStart` is the inclusive lower bound for "monthly" (30-day window).
+ */
+function aggregateStats(
+  daily: Map<string, number>,
+  monthStart: string,
+  weekAgo: string,
+  twoWeeksAgo: string,
+): { weekly: number; monthly: number; lastWeek: number } {
+  let weekly = 0, monthly = 0, lastWeek = 0;
+  for (const [date, dl] of daily) {
+    if (date >= monthStart) monthly += dl;
+    if (date >= weekAgo) weekly += dl;
+    if (date >= twoWeeksAgo && date < weekAgo) lastWeek += dl;
+  }
+  return { weekly, monthly, lastWeek };
 }
 
 /**
@@ -218,114 +260,132 @@ export function diffPackages(packages: NpmSearchResult[]): DiffResult {
 // =============================================================================
 
 /**
- * Fetch daily download data for a single package via /range endpoint.
+ * Execute one bulk /range request covering up to `BATCH_SIZE` packages.
+ * Returns Map<name, DownloadData> for every package npm responded to
+ * (including zero-traffic ones — caller filters at DB-write time if needed).
+ * Returns an empty map on non-OK response (npmFetch already retried 429/5xx).
  */
-async function fetchDailyDownloadsSingle(packageName: string): Promise<Map<string, number>> {
-  const now = new Date();
-  const start = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
-  const end = fmt(now);
+async function executeBulkFetch(
+  packages: string[],
+  rangeStart: string,
+  rangeEnd: string,
+  weekAgo: string,
+  twoWeeksAgo: string,
+  monthStart: string,
+): Promise<Map<string, DownloadData>> {
+  const result = new Map<string, DownloadData>();
+  if (packages.length === 0) return result;
 
-  const dailyMap = new Map<string, number>();
+  const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${packages.join(',')}`;
+  const response = await npmFetch(rangeUrl);
+  if (!response.ok) return result;
 
-  const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${start}:${end}/${packageName}`;
-  const rangeRes = await fetch(rangeUrl);
-  if (rangeRes.ok) {
-    const data = await rangeRes.json() as NpmRangeDownloadsResponse;
-    for (const day of data.downloads) {
-      dailyMap.set(day.day, day.downloads);
+  const data = await response.json() as { [key: string]: NpmRangeDownloadsResponse | null };
+  for (const [pkgName, pkgData] of Object.entries(data)) {
+    if (!pkgData) continue;
+    const daily = new Map<string, number>();
+    for (const day of pkgData.downloads) {
+      daily.set(day.day, day.downloads);
     }
+    result.set(pkgName, { daily, ...aggregateStats(daily, monthStart, weekAgo, twoWeeksAgo) });
   }
-
-  return dailyMap;
+  return result;
 }
 
 /**
- * Fetch download counts in batches.
- * Uses /range endpoint for real daily data (sparklines + aggregation).
- * Scoped packages are fetched individually (no bulk support).
+ * Execute one single-package /range request (used for scoped packages,
+ * which npm doesn't support in the bulk endpoint). Returns null if the
+ * package has zero traffic (mirrors the legacy filter).
+ */
+async function executeSingleFetch(
+  name: string,
+  rangeStart: string,
+  rangeEnd: string,
+  weekAgo: string,
+  twoWeeksAgo: string,
+  monthStart: string,
+): Promise<DownloadData | null> {
+  try {
+    const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${encodeURIComponent(name)}`;
+    const response = await fetch(rangeUrl);
+    if (!response.ok) return null;
+    const data = await response.json() as NpmRangeDownloadsResponse;
+    const daily = new Map<string, number>();
+    for (const day of data.downloads) {
+      daily.set(day.day, day.downloads);
+    }
+    const stats = aggregateStats(daily, monthStart, weekAgo, twoWeeksAgo);
+    if (stats.weekly === 0 && stats.monthly === 0) return null;
+    return { daily, ...stats };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch download counts concurrently.
+ *
+ * Uses the /range endpoint for real daily data (sparklines + rolling
+ * aggregation). Non-scoped packages go through the bulk endpoint (up to
+ * `BATCH_SIZE` per request); scoped packages must be fetched individually
+ * because npm's bulk endpoint doesn't accept them.
+ *
+ * All tasks (bulk batches + single scoped fetches) share a single
+ * `DOWNLOAD_CONCURRENCY`-wide worker pool — no artificial sleeps between
+ * requests. The npm downloads API tolerates ~10 concurrent requests, which is
+ * what we run with by default.
+ *
+ * Pass `range` to override the default 30-day-back-to-today window.
  */
 export async function fetchDownloadsBatched(
-  packageNames: string[]
+  packageNames: string[],
+  range?: { start: string; end: string },
 ): Promise<Map<string, DownloadData>> {
   if (packageNames.length === 0) return new Map();
-
-  const allDownloads = new Map<string, DownloadData>();
 
   const scopedPackages = packageNames.filter(isScopedPackage);
   const nonScopedPackages = packageNames.filter(n => !isScopedPackage(n));
 
   const now = new Date();
-  const rangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
-  const rangeEnd = fmt(now);
+  const rangeStart = range?.start ?? fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const rangeEnd = range?.end ?? fmt(now);
   const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
   const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
+  // "monthly" bucket uses the same lower bound as the requested range —
+  // by default 30 days back. For short delta ranges this still reflects
+  // only what we fetched, which is the same behavior as the legacy path.
+  const monthStart = rangeStart;
 
-  // Process non-scoped packages in bulk batches using /range endpoint
-  const batches: string[][] = [];
+  const bulkBatches: string[][] = [];
   for (let i = 0; i < nonScopedPackages.length; i += BATCH_SIZE) {
-    batches.push(nonScopedPackages.slice(i, i + BATCH_SIZE));
+    bulkBatches.push(nonScopedPackages.slice(i, i + BATCH_SIZE));
   }
 
-  console.log(`[Sync] Fetching downloads: ${nonScopedPackages.length} non-scoped (${batches.length} batches) + ${scopedPackages.length} scoped (individual)`);
+  type Task =
+    | { kind: 'bulk'; names: string[] }
+    | { kind: 'single'; name: string };
 
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    const packageList = batch.join(',');
+  const tasks: Task[] = [
+    ...bulkBatches.map(names => ({ kind: 'bulk' as const, names })),
+    ...scopedPackages.map(name => ({ kind: 'single' as const, name })),
+  ];
 
-    const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${packageList}`;
-    const rangeResponse = await npmFetch(rangeUrl);
+  console.log(`[Sync] Fetching downloads: ${nonScopedPackages.length} non-scoped (${bulkBatches.length} bulk batches) + ${scopedPackages.length} scoped (individual) — concurrency=${DOWNLOAD_CONCURRENCY}, range=${rangeStart}:${rangeEnd}`);
 
-    if (rangeResponse.ok) {
-      const rangeData = await rangeResponse.json() as { [key: string]: NpmRangeDownloadsResponse | null };
-      for (const [pkgName, pkgData] of Object.entries(rangeData)) {
-        if (!pkgData) continue;
-        const daily = new Map<string, number>();
-        for (const day of pkgData.downloads) {
-          daily.set(day.day, day.downloads);
-        }
-
-        let weekly = 0, monthly = 0, lastWeek = 0;
-        for (const [date, dl] of daily) {
-          if (date >= rangeStart) monthly += dl;
-          if (date >= weekAgo) weekly += dl;
-          if (date >= twoWeeksAgo && date < weekAgo) lastWeek += dl;
-        }
-
-        allDownloads.set(pkgName, { daily, weekly, monthly, lastWeek });
-      }
+  const maps = await pMap(tasks, DOWNLOAD_CONCURRENCY, async (task): Promise<Map<string, DownloadData>> => {
+    if (task.kind === 'bulk') {
+      return executeBulkFetch(task.names, rangeStart, rangeEnd, weekAgo, twoWeeksAgo, monthStart);
     }
+    const data = await executeSingleFetch(task.name, rangeStart, rangeEnd, weekAgo, twoWeeksAgo, monthStart);
+    const out = new Map<string, DownloadData>();
+    if (data) out.set(task.name, data);
+    return out;
+  });
 
-    console.log(`[Sync] Batch ${i + 1}/${batches.length} complete`);
-
-    if (i < batches.length - 1) {
-      await sleep(RATE_LIMIT_DELAY);
-    }
+  const allDownloads = new Map<string, DownloadData>();
+  for (const m of maps) {
+    for (const [k, v] of m) allDownloads.set(k, v);
   }
-
-  // Fetch scoped packages individually
-  for (let i = 0; i < scopedPackages.length; i++) {
-    try {
-      const daily = await fetchDailyDownloadsSingle(scopedPackages[i]);
-
-      let weekly = 0, monthly = 0, lastWeek = 0;
-      for (const [date, dl] of daily) {
-        if (date >= rangeStart) monthly += dl;
-        if (date >= weekAgo) weekly += dl;
-        if (date >= twoWeeksAgo && date < weekAgo) lastWeek += dl;
-      }
-
-      if (weekly > 0 || monthly > 0) {
-        allDownloads.set(scopedPackages[i], { daily, weekly, monthly, lastWeek });
-      }
-    } catch {
-      // Skip packages that fail
-    }
-    if ((i + 1) % 50 === 0 || i === scopedPackages.length - 1) {
-      console.log(`[Sync] Scoped packages: ${i + 1}/${scopedPackages.length}`);
-    }
-    await sleep(RATE_LIMIT_DELAY);
-  }
-
   return allDownloads;
 }
 
@@ -402,109 +462,127 @@ export function upsertDownloads(packageName: string, data: DownloadData): void {
 }
 
 // =============================================================================
-// Incremental download refresh (sliding window)
+// Unified concurrent download sync (merged fetch + persist)
 // =============================================================================
 
 /**
- * Incrementally refresh download data for ALL packages.
- * Instead of re-fetching the full 30-day range, only fetch the days since
- * our last successful sync. If the gap is too large (>25 days), fall back
- * to full fetch.
+ * Unified concurrent downloads fetch + persist for an incremental sync.
  *
- * This uses the npm /range endpoint which returns per-day data, so we can
- * request just the delta days and upsert them into the existing table.
+ * Replaces what used to be two sequential phases:
+ *   - 3a: fetch full 30-day range for new/updated packages, per-package
+ *     DELETE + INSERT (wipe stale rows + rewrite history).
+ *   - 3b: fetch delta-range downloads for unchanged packages (sliding window
+ *     since last sync), per-day UPSERT (add newer days onto existing history).
+ *
+ * Both are now one pass: packages fan out through a single
+ * `DOWNLOAD_CONCURRENCY`-wide worker pool. Bulk batches cover non-scoped
+ * packages (up to `BATCH_SIZE` per request); scoped packages are fetched
+ * individually because npm's bulk endpoint doesn't accept them. New/updated
+ * packages run with the full 30-day range; unchanged packages run with the
+ * delta range (day after last sync -> today), falling back to the full 30-day
+ * range if there's no recorded last sync or the gap exceeds 25 days.
+ *
+ * DB writes are serialized into ONE transaction at the end: `node:sqlite`'s
+ * `DatabaseSync` is synchronous on a single shared connection, so two
+ * concurrent `BEGIN TRANSACTION` blocks would collide. The transaction also
+ * prunes `daily_downloads` rows older than 30 days.
+ *
+ * Returns the count of packages whose download rows were inserted/upserted.
  */
-async function refreshDownloadsIncremental(allPackageNames: string[]): Promise<number> {
-  const lastSync = getSyncMeta(SYNC_META_KEY);
+async function fetchAndPersistIncrementalDownloads(
+  newOrUpdated: NpmSearchResult[],
+  unchanged: NpmSearchResult[],
+  lastSync: string | null,
+): Promise<number> {
   const now = new Date();
   const today = fmt(now);
+  const fullRangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+  const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
 
-  // Calculate the range we need to fetch
-  let rangeStart: string;
+  // Delta range for unchanged packages — fall back to full 30-day range if
+  // we never synced or the gap is too large (>25 days). `runSync()` routes
+  // first-time runs to `runFullSync`, so lastSync should rarely be null here,
+  // but the fallback keeps us safe.
+  let deltaStart: string;
   if (lastSync) {
     const lastSyncDate = new Date(lastSync);
     const daysSinceSync = (now.getTime() - lastSyncDate.getTime()) / (1000 * 60 * 60 * 24);
     if (daysSinceSync > 25) {
-      // Gap too large — fall back to full 30-day range
-      rangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
-      console.log(`[Sync] Gap since last sync is ${Math.round(daysSinceSync)} days — using full 30-day range`);
+      deltaStart = fullRangeStart;
+      console.log(`[Sync] Gap since last sync is ${Math.round(daysSinceSync)} days — using full 30-day range for unchanged packages`);
     } else {
-      // Fetch from the day after last sync
-      rangeStart = fmt(new Date(lastSyncDate.getTime() + 24 * 60 * 60 * 1000));
-      console.log(`[Sync] Incremental download refresh: ${rangeStart} to ${today}`);
+      deltaStart = fmt(new Date(lastSyncDate.getTime() + 24 * 60 * 60 * 1000));
     }
   } else {
-    // Never synced before — full range
-    rangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
-    console.log('[Sync] No previous sync found — using full 30-day range');
+    deltaStart = fullRangeStart;
+    console.log('[Sync] No previous sync found — using full 30-day range for unchanged packages');
   }
 
-  // If rangeStart is today or in the future, nothing to fetch
-  if (rangeStart > today) {
-    console.log('[Sync] Download data is up to date — nothing to refresh');
-    return 0;
-  }
+  const unchangedUpToDate = deltaStart >= today;
 
-  const scopedPackages = allPackageNames.filter(isScopedPackage);
-  const nonScopedPackages = allPackageNames.filter(n => !isScopedPackage(n));
+  const newOrUpdatedNames = newOrUpdated.map(p => p.package.name);
+  const unchangedNames = unchanged.map(p => p.package.name);
 
-  let downloadsUpdated = 0;
+  const newOrUpdatedNonScoped = newOrUpdatedNames.filter(n => !isScopedPackage(n));
+  const newOrUpdatedScoped = newOrUpdatedNames.filter(isScopedPackage);
+  const unchangedNonScoped = unchangedNames.filter(n => !isScopedPackage(n));
+  const unchangedScoped = unchangedNames.filter(isScopedPackage);
 
-  // Batch non-scoped packages
-  const batches: string[][] = [];
-  for (let i = 0; i < nonScopedPackages.length; i += BATCH_SIZE) {
-    batches.push(nonScopedPackages.slice(i, i + BATCH_SIZE));
-  }
+  type Task =
+    | { kind: 'bulk'; names: string[]; rangeStart: string; rangeEnd: string; fullRange: true }
+    | { kind: 'single'; names: [string]; rangeStart: string; rangeEnd: string; fullRange: true };
 
-  console.log(`[Sync] Refreshing downloads: ${nonScopedPackages.length} non-scoped (${batches.length} batches) + ${scopedPackages.length} scoped`);
+  const chunk = <T>(arr: T[], size: number): T[][] => {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  };
 
-  const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
-  const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
-  const fullRangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const tasks: Task[] = [
+    // New + updated: full 30-day range
+    ...chunk(newOrUpdatedNonScoped, BATCH_SIZE).map(names => ({
+      kind: 'bulk' as const, names, rangeStart: fullRangeStart, rangeEnd: today, fullRange: true as const,
+    })),
+    ...newOrUpdatedScoped.map(name => ({
+      kind: 'single' as const, names: [name] as [string], rangeStart: fullRangeStart, rangeEnd: today, fullRange: true as const,
+    })),
+    // Unchanged: delta range (skipped entirely if up-to-date)
+    ...(unchangedUpToDate ? [] : chunk(unchangedNonScoped, BATCH_SIZE).map(names => ({
+      kind: 'bulk' as const, names, rangeStart: deltaStart, rangeEnd: today, fullRange: true as const,
+    }))),
+    ...(unchangedUpToDate ? [] : unchangedScoped.map(name => ({
+      kind: 'single' as const, names: [name] as [string], rangeStart: deltaStart, rangeEnd: today, fullRange: true as const,
+    }))),
+  ];
 
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    const packageList = batch.join(',');
+  const totalNewOrUpdated = newOrUpdatedNonScoped.length + newOrUpdatedScoped.length;
+  const totalUnchanged = unchangedNonScoped.length + unchangedScoped.length;
+  console.log(
+    `[Sync] Downloads fetch: ${totalNewOrUpdated} new/updated (full 30-day range) + ` +
+    `${totalUnchanged} unchanged (${unchangedUpToDate ? 'up to date, skipped' : `delta ${deltaStart}:${today}`}) ` +
+    `— ${tasks.length} tasks at concurrency=${DOWNLOAD_CONCURRENCY}`,
+  );
 
-    const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${today}/${packageList}`;
-    const rangeResponse = await npmFetch(rangeUrl);
-
-    if (rangeResponse.ok) {
-      const rangeData = await rangeResponse.json() as { [key: string]: NpmRangeDownloadsResponse | null };
-
-      const db = getDb();
-      const upsertStmt = db.prepare(`
-        INSERT INTO daily_downloads (package_name, date, downloads)
-        VALUES (?, ?, ?)
-        ON CONFLICT(package_name, date) DO UPDATE SET
-          downloads = excluded.downloads
-      `);
-
-      db.exec('BEGIN TRANSACTION');
-      try {
-        for (const [pkgName, pkgData] of Object.entries(rangeData)) {
-          if (!pkgData) continue;
-
-          for (const day of pkgData.downloads) {
-            upsertStmt.run(pkgName, day.day, day.downloads);
-          }
-          downloadsUpdated++;
-        }
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
-      }
+  // Fan all tasks through one shared worker pool — npm sees at most
+  // DOWNLOAD_CONCURRENCY requests in flight at once, regardless of which
+  // group each task belongs to.
+  const taskResults = await pMap(tasks, DOWNLOAD_CONCURRENCY, async (task): Promise<{ map: Map<string, DownloadData>; fullRange: boolean }> => {
+    let map: Map<string, DownloadData>;
+    if (task.kind === 'bulk') {
+      map = await executeBulkFetch(task.names, task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
+    } else {
+      const data = await executeSingleFetch(task.names[0], task.rangeStart, task.rangeEnd, weekAgo, twoWeeksAgo, task.rangeStart);
+      map = new Map();
+      if (data) map.set(task.names[0], data);
     }
+    return { map, fullRange: task.fullRange };
+  });
 
-    console.log(`[Sync] Batch ${i + 1}/${batches.length} complete (${downloadsUpdated} packages updated)`);
-
-    if (i < batches.length - 1) {
-      await sleep(RATE_LIMIT_DELAY);
-    }
-  }
-
-  // Scoped packages individually
+  // Single transaction: node:sqlite is sync on one shared connection, so we
+  // can't run concurrent transactions. Waiting for all network I/O to finish
+  // and then doing the writes in one BEGIN/COMMIT block is both faster
+  // (one fsync) and correct.
   const db = getDb();
   const upsertStmt = db.prepare(`
     INSERT INTO daily_downloads (package_name, date, downloads)
@@ -512,38 +590,38 @@ async function refreshDownloadsIncremental(allPackageNames: string[]): Promise<n
     ON CONFLICT(package_name, date) DO UPDATE SET
       downloads = excluded.downloads
   `);
+  const deleteStmt = db.prepare('DELETE FROM daily_downloads WHERE package_name = ?');
 
-  for (let i = 0; i < scopedPackages.length; i++) {
-    try {
-      const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${today}/${encodeURIComponent(scopedPackages[i])}`;
-      const rangeRes = await fetch(rangeUrl);
-      if (rangeRes.ok) {
-        const data = await rangeRes.json() as NpmRangeDownloadsResponse;
-
-        db.exec('BEGIN TRANSACTION');
-        try {
-          for (const day of data.downloads) {
-            upsertStmt.run(scopedPackages[i], day.day, day.downloads);
-          }
-          db.exec('COMMIT');
-        } catch (err) {
-          db.exec('ROLLBACK');
-          throw err;
+  const t0 = Date.now();
+  let downloadsUpdated = 0;
+  db.exec('BEGIN TRANSACTION');
+  try {
+    for (const { map, fullRange } of taskResults) {
+      for (const [pkgName, data] of map) {
+        if (fullRange) {
+          // New/updated path: skip dead packages (zero traffic over the
+          // full 30-day range) — preserves the legacy filter and avoids
+          // writing 30 zero rows for packages nobody uses. Existing rows
+          // for previously-live packages are intentionally preserved.
+          if (data.weekly === 0 && data.monthly === 0) continue;
+          deleteStmt.run(pkgName);
+        }
+        for (const [date, dl] of data.daily) {
+          upsertStmt.run(pkgName, date, dl);
         }
         downloadsUpdated++;
       }
-    } catch {
-      // Skip
     }
-
-    if ((i + 1) % 50 === 0 || i === scopedPackages.length - 1) {
-      console.log(`[Sync] Scoped packages: ${i + 1}/${scopedPackages.length}`);
-    }
-    await sleep(RATE_LIMIT_DELAY);
+    // Prune anything older than the 30-day window.
+    db.prepare('DELETE FROM daily_downloads WHERE date < ?').run(fullRangeStart);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
 
-  // Prune download data older than 30 days to keep the table small
-  db.prepare('DELETE FROM daily_downloads WHERE date < ?').run(fullRangeStart);
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  console.log(`[Sync] Persisted ${downloadsUpdated} package download records in ${elapsed}s`);
 
   return downloadsUpdated;
 }
@@ -552,14 +630,20 @@ async function refreshDownloadsIncremental(allPackageNames: string[]): Promise<n
 // Sync entry points
 // =============================================================================
 
+
 /**
  * Incremental sync — fast periodic update.
  *
- * 1. Paginates npm search to discover the full package list (lightweight, ~12 API calls)
- * 2. Diffs against DB to find new/changed packages
- * 3. Upserts only new/changed package metadata
- * 4. Refreshes download data incrementally (only new days since last sync)
- * 5. Records sync timestamp
+ * 1. Paginates npm search to discover the full package list (lightweight,
+ *    ~12 API calls — must run first since later steps need the names).
+ * 2. Diffs against DB to find new/changed packages.
+ * 3. Upserts only new/changed package metadata (DB transaction — fast).
+ * 4. Fetches downloads concurrently in one pass:
+ *      - new/updated packages get the full 30-day range (DELETE + INSERT)
+ *      - unchanged packages get the delta range since last sync (UPSERT)
+ *    All npm requests share a single `DOWNLOAD_CONCURRENCY`-wide worker
+ *    pool. DB writes are serialized into one transaction at the end.
+ * 5. Records sync timestamp.
  *
  * This is designed to run every few hours in production.
  */
@@ -592,51 +676,24 @@ export async function runIncrementalSync(): Promise<SyncResult> {
     console.log(`[Sync] Upserted ${packagesToUpsert.length} package records`);
   }
 
-  // 4. Fetch full downloads for new/updated packages
-  let downloadsUpdated = 0;
-  if (packagesToUpsert.length > 0) {
-    const names = packagesToUpsert.map(p => p.package.name);
-    const allDownloads = await fetchDownloadsBatched(names);
+  // 4. Unified concurrent downloads fetch + persist (merged former phases 3a + 3b)
+  //    - new/updated: full 30-day range, per-package DELETE + INSERT
+  //    - unchanged: delta range since last sync, per-day UPSERT
+  //    Both fan out through one DOWNLOAD_CONCURRENCY-wide worker pool.
+  const lastSync = getSyncMeta(SYNC_META_KEY);
+  const downloadsUpdated = await fetchAndPersistIncrementalDownloads(
+    packagesToUpsert,
+    diff.unchangedPackages,
+    lastSync,
+  );
 
-    const db = getDb();
-    const stmt = db.prepare(`
-      INSERT INTO daily_downloads (package_name, date, downloads)
-      VALUES (?, ?, ?)
-      ON CONFLICT(package_name, date) DO UPDATE SET
-        downloads = excluded.downloads
-    `);
-
-    db.exec('BEGIN TRANSACTION');
-    try {
-      for (const pkg of packagesToUpsert) {
-        const downloads = allDownloads.get(pkg.package.name);
-        if (downloads && (downloads.weekly > 0 || downloads.monthly > 0)) {
-          db.prepare('DELETE FROM daily_downloads WHERE package_name = ?').run(pkg.package.name);
-          for (const [date, dl] of downloads.daily) {
-            stmt.run(pkg.package.name, date, dl);
-          }
-          downloadsUpdated++;
-        }
-      }
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
-  }
-
-  // 5. Incrementally refresh download data for ALL packages (sliding window)
-  const allNames = packages.map(p => p.package.name);
-  const refreshedCount = await refreshDownloadsIncremental(allNames);
-  downloadsUpdated += refreshedCount;
-
-  // 6. Mark packages as removed if they disappeared from npm
+  // 5. Mark packages as removed if they disappeared from npm
   if (diff.removedNames.length > 0) {
     console.log(`[Sync] ${diff.removedNames.length} packages no longer found on npm (retaining in DB)`);
     // We keep them in DB — they might just be temporarily unavailable
   }
 
-  // 7. Record sync timestamp
+  // 6. Record sync timestamp
   setSyncMeta(SYNC_META_KEY, new Date().toISOString());
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
