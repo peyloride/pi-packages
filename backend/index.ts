@@ -100,10 +100,6 @@ const PERIOD_DAYS: Record<Period, number> = {
 // -----------------------------------------------------------------------------
 // Growth-percent tuning constants.
 //
-// GROWTH_DISPLAY_CAP: maximum magnitude rendered to clients. The sort uses
-// the true value (a +5000% package still ranks above +500%); only the
-// displayed badge is clamped so clients don't show +25900%.
-//
 // TRENDING_MIN_DOWNLOADS: packages below this volume in the current period
 // are excluded from the trending ranking. Cuts tiny-baseline noise from the
 // trending tab (a 1 -> 5 package no longer dominates) without affecting the
@@ -112,7 +108,6 @@ const PERIOD_DAYS: Record<Period, number> = {
 // Note: the smoothing prior (k) lives in growth.ts alongside the sync-time
 // recompute, since that's the only place the raw formula is evaluated now.
 // -----------------------------------------------------------------------------
-const GROWTH_DISPLAY_CAP = 1000;
 const TRENDING_MIN_DOWNLOADS: Record<Period, number> = {
   daily: 10,
   weekly: 50,
@@ -305,16 +300,14 @@ app.get('/api/packages', async (c) => {
 
     // Enrich with sparkline + format
     const packagesWithGrowth = packages.map(pkg => {
-      // growth_percent is never NULL with Bayesian smoothing (denominator is
-      // always ≥ k > 0), so the old "else if period_downloads > 0 -> 100" branch
-      // is gone. Display is clamped to ±GROWTH_DISPLAY_CAP; the sort uses the
-      // true value so genuine breakouts still rank correctly.
-      let growth: number | null = pkg.growth_percent !== null
+      // growth_percent comes from the materialized column (Bayesian-smoothed,
+      // NULL for no-baseline packages). The displayed value is the true value
+      // — no display cap, since smoothing + the volume floor already removed
+      // the noise that motivated capping, and a cap flattens exactly the real
+      // breakouts the trending tab exists to surface.
+      const growth: number | null = pkg.growth_percent !== null
         ? Math.round(pkg.growth_percent * 10) / 10
         : null;
-      if (growth !== null) {
-        growth = Math.max(-GROWTH_DISPLAY_CAP, Math.min(GROWTH_DISPLAY_CAP, growth));
-      }
 
       const sparkline = sparklineMap.get(pkg.name) || [];
 
@@ -406,13 +399,9 @@ app.get('/api/packages/:name', async (c) => {
 
     // Read materialized weekly growth from the packages table (computed at
     // sync time) so the detail view's badge matches the list view exactly.
-    // Display is clamped to ±GROWTH_DISPLAY_CAP.
-    let growth: number | null = pkg.weekly_growth !== null && pkg.weekly_growth !== undefined
+    const growth: number | null = pkg.weekly_growth !== null && pkg.weekly_growth !== undefined
       ? Math.round(pkg.weekly_growth * 10) / 10
       : null;
-    if (growth !== null) {
-      growth = Math.max(-GROWTH_DISPLAY_CAP, Math.min(GROWTH_DISPLAY_CAP, growth));
-    }
 
     // Generate sparkline data (7 days)
     const sparkline = downloads.slice(-7).map(d => d.downloads);
