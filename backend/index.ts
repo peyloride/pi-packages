@@ -10,12 +10,19 @@ import { getDb, closeDb } from './db';
 import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
 import { computeAssetVersion, buildAssetCache } from './assets';
 import { compress } from './compress';
+import { getStatsCache, recomputeStatsCache } from './stats';
 
 const app = new Hono();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Start cron scheduler
 startCron();
+
+// Ensure materialized stats exist at boot (covers cold start — otherwise the
+// first /api/stats request would compute them lazily). Subsequent syncs refresh.
+if (!getStatsCache()) {
+  recomputeStatsCache();
+}
 
 // CORS for local development
 app.use('/*', cors());
@@ -403,38 +410,14 @@ app.get('/api/stats', async (c) => {
       });
     }
 
+    // Read materialized stats (computed once per sync). Falls back to a live
+    // recompute only on cold start (no sync has ever run).
+    let stats = getStatsCache();
+    if (!stats) {
+      stats = recomputeStatsCache();
+    }
+
     const db = getDb();
-
-    const totalPackages = db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number };
-
-    const totalWeeklyDownloads = db.prepare(`
-      SELECT SUM(downloads) as total
-      FROM daily_downloads
-      WHERE date >= date('now', '-7 days')
-    `).get() as { total: number | null };
-
-    const totalMonthlyDownloads = db.prepare(`
-      SELECT SUM(downloads) as total
-      FROM daily_downloads
-      WHERE date >= date('now', '-30 days')
-    `).get() as { total: number | null };
-
-    const avgGrowth = db.prepare(`
-      SELECT AVG(growth) as avg
-      FROM (
-        SELECT
-          (this_week - last_week) * 100.0 / NULLIF(last_week, 0) as growth
-        FROM (
-          SELECT
-            SUM(CASE WHEN date >= date('now', '-7 days') THEN downloads ELSE 0 END) as this_week,
-            SUM(CASE WHEN date >= date('now', '-14 days') AND date < date('now', '-7 days') THEN downloads ELSE 0 END) as last_week
-          FROM daily_downloads
-          GROUP BY package_name
-        )
-        WHERE last_week > 0
-      )
-    `).get() as { avg: number | null };
-
     const nextSyncTime = getNextRunTime();
     const lastResult = getLastSyncResult();
 
@@ -442,10 +425,10 @@ app.get('/api/stats', async (c) => {
     const syncMetaRow = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('last_incremental_sync') as { value: string } | undefined;
 
     const resultBody = {
-      total_packages: totalPackages.count,
-      total_weekly_downloads: totalWeeklyDownloads.total || 0,
-      total_monthly_downloads: totalMonthlyDownloads.total || 0,
-      average_growth: avgGrowth.avg ? Math.round(avgGrowth.avg * 10) / 10 : 0,
+      total_packages: stats.total_packages,
+      total_weekly_downloads: stats.total_weekly_downloads,
+      total_monthly_downloads: stats.total_monthly_downloads,
+      average_growth: stats.average_growth,
       last_sync: syncMetaRow?.value || null,
       next_sync: nextSyncTime?.toISOString() || null,
       sync_running: isSyncRunning(),
