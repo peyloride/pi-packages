@@ -26,7 +26,12 @@ export class PackageCard {
       showTrend: options.showTrend !== false,
       onNameClick: options.onNameClick || null,
       onCopy: options.onCopy || null,
+      // `<sourceType>:` is required so pi can resolve the source — see
+      // `pi install npm:@foo/bar` and `pi install git:git@github.com:user/repo@ref`
+      // in the pi packages docs. No space between the colon and the spec:
+      // `npm:pkg` (not `npm: pkg`), `git:git@github.com:...` (not `git: git@...`).
       installPrefix: options.installPrefix || 'pi install',
+      installSourceType: options.installSourceType || 'npm',
       ...options
     };
 
@@ -72,8 +77,9 @@ export class PackageCard {
       ? `<span class="package-version">v${data.version}</span>` 
       : '';
 
-    // Build install command
-    const installCmd = `${options.installPrefix} ${data.name}`;
+    // Build install command: `pi install <sourceType>:<spec>` with no space
+    // between the colon and the spec.
+    const installCmd = `${options.installPrefix} ${options.installSourceType}:${data.name}`;
 
     article.innerHTML = `
       <div class="package-head">

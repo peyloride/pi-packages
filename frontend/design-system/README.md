@@ -262,7 +262,7 @@ const throttledScroll = throttle(() => {
 }, 100);
 
 // Clipboard
-await copyToClipboard('pi install package');
+await copyToClipboard('pi install npm:package');
 
 // Other utilities
 generateId();        // "id-123456-abc123"
