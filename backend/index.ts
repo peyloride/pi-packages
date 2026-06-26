@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { getDb, closeDb } from './db';
 import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
 import { computeAssetVersion, buildAssetCache } from './assets';
+import { compress } from './compress';
 
 const app = new Hono();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -18,6 +19,11 @@ startCron();
 
 // CORS for local development
 app.use('/*', cors());
+
+// Response compression (brotli > gzip > deflate). Registered before etag so
+// compression runs OUTSIDE etag: etag computes its validator on the raw body
+// (and may short-circuit to 304), and we only encode the bytes that ship.
+app.use('/*', compress());
 
 // ETag for API responses: lets browsers/CDNs revalidate with If-None-Match
 // and get a free 304 (no body) when the payload is unchanged.
