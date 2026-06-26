@@ -40,7 +40,6 @@ The dashboard will be available at http://localhost:3000
 | `GET /api/packages` | List packages with sorting (`trending`, `popular`, `new`, `updated`) |
 | `GET /api/packages/:name` | Get package details with download history |
 | `GET /api/stats` | Get ecosystem statistics |
-| `POST /api/sync` | Manually trigger package sync |
 
 #### Query Parameters
 

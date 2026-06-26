@@ -7,7 +7,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getDb, closeDb } from './db';
-import { startCron, triggerSync, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
+import { startCron, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVersion } from './cron';
 import { computeAssetVersion, buildAssetCache } from './assets';
 import { compress } from './compress';
 import { getStatsCache, recomputeStatsCache } from './stats';
@@ -442,20 +442,6 @@ app.get('/api/stats', async (c) => {
   } catch (err) {
     console.error('[API] Error fetching stats:', err);
     return c.json({ error: 'Failed to fetch stats' }, 500);
-  }
-});
-
-/**
- * POST /api/sync - Manually trigger sync
- */
-app.post('/api/sync', async (c) => {
-  try {
-    const full = c.req.query('full') === 'true';
-    const result = await triggerSync(full);
-    return c.json(result, result.success ? 200 : 409);
-  } catch (err) {
-    console.error('[API] Error triggering sync:', err);
-    return c.json({ success: false, message: 'Failed to trigger sync' }, 500);
   }
 });
 

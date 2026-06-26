@@ -4,7 +4,6 @@ import {
   shouldRun,
   getNextRunTime,
   isSyncRunning,
-  triggerSync,
 } from './cron';
 
 // Mock the sync module using Bun's mock module
@@ -103,24 +102,6 @@ describe('cron.ts', () => {
       // Note: This may be true if sync is actually running
       const result = isSyncRunning();
       expect(typeof result).toBe('boolean');
-    });
-  });
-
-  describe('triggerSync', () => {
-    it.skip('should return success when sync completes - times out due to npm API', async () => {
-      // This test times out because it actually calls npm API
-      // Skipping for now - tested indirectly via other tests
-      const result = await triggerSync();
-      expect(typeof result.success).toBe('boolean');
-      expect(typeof result.message).toBe('string');
-    });
-
-    it.skip('should handle sync errors gracefully - times out due to npm API', async () => {
-      // This tests the basic error handling path
-      // Skipping because it times out calling npm API
-      const result = await triggerSync();
-      expect(typeof result.success).toBe('boolean');
-      expect(typeof result.message).toBe('string');
     });
   });
 });

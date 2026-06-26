@@ -134,32 +134,6 @@ export function getNextRunTime(): Date | null {
   return next;
 }
 
-/**
- * Manual trigger — runs incremental sync (fast).
- * Use POST /api/sync?full=true for a full sync.
- */
-export async function triggerSync(full = false): Promise<{ success: boolean; message: string }> {
-  if (isRunning) {
-    return { success: false, message: 'Sync already in progress' };
-  }
-
-  isRunning = true;
-  try {
-    const result = full ? await runFullSync() : await runIncrementalSync();
-    lastSyncResult = result;
-    const mode = result.mode;
-    return {
-      success: true,
-      message: `${mode === 'full' ? 'Full' : 'Incremental'} sync: ${result.packages} packages, ${result.newPackages} new, ${result.updatedPackages} updated, ${result.downloadsUpdated} download records`,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return { success: false, message: `Sync failed: ${message}` };
-  } finally {
-    isRunning = false;
-  }
-}
-
 export function isSyncRunning(): boolean {
   return isRunning;
 }
