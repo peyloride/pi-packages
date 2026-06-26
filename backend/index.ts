@@ -223,6 +223,30 @@ app.get('/api/packages', async (c) => {
 
     const packages = db.prepare(query).all(limit, offset) as any[];
 
+    // Batch-fetch sparkline data for all packages in ONE query (was N+1 — a
+    // separate `WHERE package_name = ?` per package). 7-day window, capped at
+    // 7 data points, grouped by package name.
+    const sparklineDays = Math.min(periodDays, 7);
+    const sparklineMap = new Map<string, number[]>();
+    if (packages.length > 0) {
+      const names = packages.map(p => p.name);
+      const placeholders = names.map(() => '?').join(',');
+      const sparklineRows = db.prepare(
+        `SELECT package_name, downloads FROM daily_downloads
+         WHERE date >= date('now', '-${sparklineDays} days')
+         AND package_name IN (${placeholders})
+         ORDER BY package_name, date ASC`,
+      ).all(...names) as Array<{ package_name: string; downloads: number }>;
+      for (const row of sparklineRows) {
+        let arr = sparklineMap.get(row.package_name);
+        if (!arr) {
+          arr = [];
+          sparklineMap.set(row.package_name, arr);
+        }
+        arr.push(row.downloads);
+      }
+    }
+
     // Enrich with sparkline + format
     const packagesWithGrowth = packages.map(pkg => {
       let growth = null;
@@ -232,15 +256,7 @@ app.get('/api/packages', async (c) => {
         growth = 100;
       }
 
-      // Get sparkline data for the selected period (up to 7 data points)
-      const sparklineDays = Math.min(periodDays, 7);
-      const sparklineData = db.prepare(`
-        SELECT downloads FROM daily_downloads
-        WHERE package_name = ?
-        AND date >= date('now', '-${sparklineDays} days')
-        ORDER BY date ASC
-      `).all(pkg.name) as Array<{ downloads: number }>;
-      const sparkline = sparklineData.map(d => d.downloads);
+      const sparkline = sparklineMap.get(pkg.name) || [];
 
       // Resolve display publisher (GitHub Actions OIDC -> repo owner)
       const { publisher, publisher_raw } = resolvePublisher(pkg.publisher, pkg.github_url);
