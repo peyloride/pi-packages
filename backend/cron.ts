@@ -1,6 +1,7 @@
 import { runIncrementalSync, runFullSync } from './sync';
 import type { SyncResult } from './sync';
 import { recomputeStatsCache } from './stats';
+import { recomputeGrowthCache } from './growth';
 
 // Cron configuration:
 // SYNC_CRON: controls incremental sync (default: every 4 hours)
@@ -83,6 +84,7 @@ export function startCron(): void {
       try {
         lastSyncResult = await runFullSync();
         recomputeStatsCache();
+        recomputeGrowthCache();
         lastFullDate = today;
         lastIncrementalDate = today;
         syncVersion++;
@@ -101,6 +103,7 @@ export function startCron(): void {
       try {
         lastSyncResult = await runIncrementalSync();
         recomputeStatsCache();
+        recomputeGrowthCache();
         lastIncrementalDate = today;
         syncVersion++;
         console.log('[Cron] Incremental sync completed');
