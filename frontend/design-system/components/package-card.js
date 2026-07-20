@@ -1,4 +1,4 @@
-import { formatNumber, timeAgo, copyToClipboard } from '../js/utils.js';
+import { formatNumber, timeAgo, copyToClipboard, escapeHtml, sanitizeUrl } from '../js/utils.js';
 
 /**
  * PackageCard Component
@@ -43,9 +43,28 @@ export class PackageCard {
     article.className = 'package';
     
     const { data, options } = this;
-    
+
+    // All npm-sourced strings (name, description, publisher, version, URLs) are
+    // UNTRUSTED — anyone can `npm publish` a pi-package. Escape text before
+    // interpolating into innerHTML and allowlist URLs before using them as
+    // hrefs, otherwise a malicious description like `<img src=x onerror=...>`
+    // becomes a stored XSS that fires for every dashboard visitor.
+    const safeName = escapeHtml(data.name);
+    const safeDescription = escapeHtml(data.description) || 'No description available';
+    const safePublisher = escapeHtml(data.publisher);
+    const safeVersion = escapeHtml(data.version);
+    const githubLink = sanitizeUrl(data.github_url);
+    const npmLink = sanitizeUrl(data.npm_url);
+    // Prefer a usable GitHub link, fall back to npm, else no link at all
+    // (e.g. an `ssh://` repo URL is neutralized to '#' and dropped).
+    const profileLink = githubLink !== '#' ? { href: githubLink, label: 'GitHub' }
+      : npmLink !== '#' ? { href: npmLink, label: 'npm' }
+      : null;
+    // Escape the href for the attribute context too (a URL may contain `"`).
+    const profileHref = profileLink ? escapeHtml(profileLink.href) : '#';
+
     // Build stats HTML
-    const downloadsLabel = data.downloads_label || '/week';
+    const downloadsLabel = escapeHtml(data.downloads_label || '/week');
     const statsHtml = `
       <div class="stat">
         <span class="stat-value weekly-downloads">${formatNumber(data.downloads)}</span>
@@ -64,40 +83,41 @@ export class PackageCard {
       metaItems.push(`<span class="meta-item updated-at">${timeAgo(data.last_publish)}</span>`);
     }
     if (data.publisher) {
-      metaItems.push(`<span class="meta-item author">${data.publisher}</span>`);
+      metaItems.push(`<span class="meta-item author">${safePublisher}</span>`);
     }
-    if (data.github_url || data.npm_url) {
-      const link = data.github_url || data.npm_url;
-      const label = data.github_url ? 'GitHub' : 'npm';
-      metaItems.push(`<a class="meta-item link-github" href="${link}" target="_blank" rel="noopener">${label}</a>`);
+    if (profileLink) {
+      metaItems.push(`<a class="meta-item link-github" href="${profileHref}" target="_blank" rel="noopener">${profileLink.label}</a>`);
     }
 
     // Build version HTML
-    const versionHtml = options.showVersion && data.version 
-      ? `<span class="package-version">v${data.version}</span>` 
+    const versionHtml = options.showVersion && data.version
+      ? `<span class="package-version">v${safeVersion}</span>`
       : '';
 
     // Build install command: `pi install <sourceType>:<spec>` with no space
-    // between the colon and the spec.
+    // between the colon and the spec. The displayed command is HTML-escaped;
+    // the copy button reads `.textContent`, which decodes back to the raw
+    // command, so copying still yields a correct `pi install npm:<name>`.
     const installCmd = `${options.installPrefix} ${options.installSourceType}:${data.name}`;
+    const safeInstallCmd = escapeHtml(installCmd);
 
     article.innerHTML = `
       <div class="package-head">
         <div class="package-title">
-          <a class="package-name" href="${data.github_url || data.npm_url || '#'}" target="_blank" rel="noopener">${data.name}</a>
+          <a class="package-name" href="${profileHref}" target="_blank" rel="noopener">${safeName}</a>
           ${versionHtml}
         </div>
         <div class="package-stats">
           ${statsHtml}
         </div>
       </div>
-      <p class="package-description">${data.description || 'No description available'}</p>
+      <p class="package-description">${safeDescription}</p>
       <div class="package-foot">
         <div class="package-meta">
           ${metaItems.join('')}
         </div>
         <div class="package-install">
-          <code class="install-cmd">${installCmd}</code>
+          <code class="install-cmd">${safeInstallCmd}</code>
           <button class="copy-btn" aria-label="Copy install command" title="Copy to clipboard">Copy</button>
         </div>
       </div>

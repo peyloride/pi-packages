@@ -149,14 +149,44 @@ export async function copyToClipboard(text) {
 }
 
 /**
- * Escape HTML special characters
- * @param {string} str - String to escape
- * @returns {string} Escaped string
+ * Escape HTML special characters so a string can be safely interpolated into
+ * HTML text or attribute contexts.
+ *
+ * Pure string replace (no DOM) so it works in any context and is unit-testable.
+ * Escapes `& < > " '` — note this covers attribute values too, which the
+ * previous `textContent`-based version did NOT (it left quotes untouched).
+ *
+ * @param {string|null|undefined} str - String to escape
+ * @returns {string} Escaped string ('' for null/undefined)
  */
 export function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Sanitize a URL for safe use in an `href`.
+ *
+ * Allowlist approach: only `http(s)://`, `mailto:`, and relative/path refs
+ * (`/...`, `#...`, `./...`) pass through. Everything else — `javascript:`,
+ * `data:`, `vbscript:`, `file:`, `ssh://`, `git://`, `ftp:` — is neutralized
+ * to `#` so it can never navigate or execute. npm-sourced repository URLs are
+ * not guaranteed to be http(s) (the registry happily stores `ssh://git@...`),
+ * so this guard is required before putting any external URL into an anchor.
+ *
+ * @param {string|null|undefined} url - URL to sanitize
+ * @returns {string} The URL if safe, otherwise '#'
+ */
+export function sanitizeUrl(url) {
+  if (!url) return '#';
+  const u = String(url).trim();
+  if (/^(?:https?:\/\/|mailto:|[/#.]|\.\.?\/)/i.test(u)) return u;
+  return '#';
 }
 
 /**
