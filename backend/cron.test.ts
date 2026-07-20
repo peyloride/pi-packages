@@ -9,6 +9,7 @@ import {
   resetCronState,
   getLastSyncResult,
   getSyncVersion,
+  type CronSchedule,
 } from './cron';
 import { getDb } from './db';
 
@@ -50,31 +51,31 @@ describe('cron.ts', () => {
 
   describe('shouldRun', () => {
     it('should return true when all conditions match', () => {
-      const schedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T03:00:00Z');
       assert.equal(shouldRun(schedule, date), true);
     });
 
     it('should return false when minute does not match', () => {
-      const schedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T03:30:00Z');
       assert.equal(shouldRun(schedule, date), false);
     });
 
     it('should return false when hour does not match', () => {
-      const schedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T05:00:00Z');
       assert.equal(shouldRun(schedule, date), false);
     });
 
     it('should match wildcard conditions', () => {
-      const schedule = { minute: '*', hour: '*', dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: '*', hour: '*', dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T15:30:00Z');
       assert.equal(shouldRun(schedule, date), true);
     });
 
     it('should match day of week', () => {
-      const schedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: 1 }; // Monday
+      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: 1 }; // Monday
       const monday = new Date('2024-01-15T03:00:00Z'); // Jan 15, 2024 is Monday
       assert.equal(shouldRun(schedule, monday), true);
     });

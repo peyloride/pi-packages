@@ -10,7 +10,7 @@ import { recomputeGrowthCache } from './growth';
 const SYNC_CRON = process.env.SYNC_CRON || '0 */4 * * *';       // Default: every 4 hours
 const SYNC_FULL_CRON = process.env.SYNC_FULL_CRON || '0 3 * * *'; // Default: 3 AM UTC daily
 
-interface CronSchedule {
+export interface CronSchedule {
   minute: number | '*';
   hour: number | '*';
   dayOfMonth: number | '*';

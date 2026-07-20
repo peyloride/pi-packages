@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    name: Typecheck + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install nub
+        run: npm install -g @nubjs/nub
+
+      - name: Install dependencies
+        run: nub install --frozen-lockfile
+
+      - name: Typecheck
+        run: nub run typecheck
+
+      - name: Test (backend + frontend)
+        run: nub run test

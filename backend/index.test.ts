@@ -55,7 +55,7 @@ describe('index.ts API Routes', () => {
       const res = await app.request('/api/packages');
       assert.equal(res.status, 200);
       assert.ok(res.headers.get('content-type')?.includes('application/json'));
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.ok(Array.isArray(body.packages));
       assert.equal(body.period, 'weekly'); // default period
       assert.ok(body.pagination);
@@ -63,7 +63,7 @@ describe('index.ts API Routes', () => {
 
     it('returns all seeded packages sorted by popularity by default', async () => {
       const res = await app.request('/api/packages?sort=popular&period=weekly');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 2);
       // pkg-a has more weekly downloads (100/day × 7 ≈ 700+) than pkg-b (10/day × 7 ≈ 70+)
       assert.equal(body.packages[0].name, 'pkg-a');
@@ -72,7 +72,7 @@ describe('index.ts API Routes', () => {
 
     it('returns a package with all expected enriched fields', async () => {
       const res = await app.request('/api/packages');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       const pkg = body.packages.find((p: any) => p.name === 'pkg-a');
       assert.ok(pkg);
       assert.equal(pkg.description, 'Package A description');
@@ -91,7 +91,7 @@ describe('index.ts API Routes', () => {
 
     it('resolves "GitHub Actions" publisher to the GitHub repo owner', async () => {
       const res = await app.request('/api/packages');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       const pkg = body.packages.find((p: any) => p.name === 'pkg-b');
       assert.ok(pkg);
       assert.equal(pkg.publisher, 'maintainer'); // parsed from github.com/maintainer/pkg-b
@@ -101,7 +101,7 @@ describe('index.ts API Routes', () => {
     it('supports the "trending" sort mode and applies the volume floor', async () => {
       const res = await app.request('/api/packages?sort=trending&period=weekly');
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       // pkg-a (50/day last week, 100/day this week → growing + above floor)
       // pkg-b (10/day stable → below TRENDING_MIN_DOWNLOADS.weekly=50)
       assert.ok(body.packages.length >= 1);
@@ -113,13 +113,13 @@ describe('index.ts API Routes', () => {
       // so nothing qualifies. Use sort=popular as a baseline instead.
       const res = await app.request('/api/packages?sort=new');
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.ok(Array.isArray(body.packages));
     });
 
     it('supports the "updated" sort mode (last_publish DESC)', async () => {
       const res = await app.request('/api/packages?sort=updated');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages[0].name, 'pkg-b'); // 2024-06-15 > 2024-01-15
     });
 
@@ -127,20 +127,20 @@ describe('index.ts API Routes', () => {
       for (const period of ['daily', 'weekly', 'monthly']) {
         const res = await app.request(`/api/packages?period=${period}`);
         assert.equal(res.status, 200);
-        const body = await res.json();
+        const body = (await res.json()) as any;
         assert.equal(body.period, period);
       }
     });
 
     it('defaults to weekly for an invalid period', async () => {
       const res = await app.request('/api/packages?period=bogus');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.period, 'weekly');
     });
 
     it('filters packages by the search query', async () => {
       const res = await app.request('/api/packages?search=Package%20A');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 1);
       assert.equal(body.packages[0].name, 'pkg-a');
     });
@@ -149,14 +149,14 @@ describe('index.ts API Routes', () => {
       // No seeded package contains a percent sign, so a literal '%' matches
       // nothing. Under the old unescaped interpolation this matched everything.
       const res = await app.request('/api/packages?search=%25'); // '%'
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 0);
       assert.equal(body.pagination.total, 0); // count query is parameterized too
     });
 
     it('treats a LIKE _ wildcard in search as a literal character', async () => {
       const res = await app.request('/api/packages?search=_');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 0); // '_' matches any single char if unescaped
     });
 
@@ -164,7 +164,7 @@ describe('index.ts API Routes', () => {
       db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run('pct-pkg', 'Gives you 100% coverage', '1.0.0', '[]', 'u', 'https://github.com/u/p', 'https://npmjs.com/package/pct-pkg', '2024-01-01', '2024-01-01');
       const res = await app.request('/api/packages?search=100%25'); // '100%'
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 1);
       assert.equal(body.packages[0].name, 'pct-pkg');
     });
@@ -172,13 +172,13 @@ describe('index.ts API Routes', () => {
     it('handles a single quote in search without error (parameterized)', async () => {
       const res = await app.request(`/api/packages?search=${encodeURIComponent("O'Brien")}`);
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 0);
     });
 
     it('applies limit + offset pagination and reports hasMore', async () => {
       const res = await app.request('/api/packages?limit=1&offset=0');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.packages.length, 1);
       assert.equal(body.pagination.total, 2);
       assert.equal(body.pagination.hasMore, true);
@@ -188,13 +188,13 @@ describe('index.ts API Routes', () => {
 
     it('caps limit at 100', async () => {
       const res = await app.request('/api/packages?limit=99999');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.ok(body.pagination.limit <= 100);
     });
 
     it('clamps a negative limit to 1 (SQLite treats negative LIMIT as unbounded)', async () => {
       const res = await app.request('/api/packages?limit=-1');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(res.status, 200);
       assert.equal(body.pagination.limit, 1);
       assert.equal(body.packages.length, 1);
@@ -202,21 +202,21 @@ describe('index.ts API Routes', () => {
 
     it('falls back to the default limit on non-numeric input', async () => {
       const res = await app.request('/api/packages?limit=abc');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(res.status, 200);
       assert.equal(body.pagination.limit, 50);
     });
 
     it('clamps a negative offset to 0', async () => {
       const res = await app.request('/api/packages?offset=-5');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(res.status, 200);
       assert.equal(body.pagination.offset, 0);
     });
 
     it('returns growth from the materialized column for growing packages', async () => {
       const res = await app.request('/api/packages?sort=trending&period=weekly');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       const pkg = body.packages.find((p: any) => p.name === 'pkg-a');
       if (pkg) {
         // growth may be null if recomputeGrowthCache didn't populate it, but
@@ -230,11 +230,11 @@ describe('index.ts API Routes', () => {
     it('serves from the response cache on a second request', async () => {
       // First call hits the DB and populates the cache
       const res1 = await app.request('/api/packages?sort=popular');
-      const body1 = await res1.json();
+      const body1 = (await res1.json()) as any;
       assert.ok(body1.packages.length > 0);
       // Second call with identical params should be served from the cache
       const res2 = await app.request('/api/packages?sort=popular');
-      const body2 = await res2.json();
+      const body2 = (await res2.json()) as any;
       assert.deepEqual(body2, body1);
     });
 
@@ -254,7 +254,7 @@ describe('index.ts API Routes', () => {
     it('returns 200 with package details for a known package', async () => {
       const res = await app.request('/api/packages/pkg-a');
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.name, 'pkg-a');
       assert.equal(body.description, 'Package A description');
       assert.equal(body.version, '1.0.0');
@@ -270,7 +270,7 @@ describe('index.ts API Routes', () => {
 
     it('resolves GitHub Actions publisher to the repo owner', async () => {
       const res = await app.request('/api/packages/pkg-b');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.publisher, 'maintainer');
       assert.equal(body.publisher_raw, 'GitHub Actions');
     });
@@ -278,13 +278,13 @@ describe('index.ts API Routes', () => {
     it('returns 404 with a JSON error for an unknown package', async () => {
       const res = await app.request('/api/packages/does-not-exist');
       assert.equal(res.status, 404);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.error, 'Package not found');
     });
 
     it('parses keywords JSON field into an array', async () => {
       const res = await app.request('/api/packages/pkg-a');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.deepEqual(body.keywords, ['test', 'pi']);
     });
 
@@ -293,7 +293,7 @@ describe('index.ts API Routes', () => {
       // Force NULL by wiping the growth column.
       db.prepare('UPDATE packages SET weekly_growth = NULL').run();
       const res = await app.request('/api/packages/pkg-a');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.growth, null);
     });
   });
@@ -306,7 +306,7 @@ describe('index.ts API Routes', () => {
     it('returns 200 with the ecosystem statistics', async () => {
       const res = await app.request('/api/stats');
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.total_packages, 2);
       assert.ok(typeof body.total_weekly_downloads === 'number');
       assert.ok(typeof body.total_monthly_downloads === 'number');
@@ -316,7 +316,7 @@ describe('index.ts API Routes', () => {
 
     it('reads stats from the materialized cache (set in beforeEach)', async () => {
       const res = await app.request('/api/stats');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       // recomputeStatsCache() ran in beforeEach with 2 packages
       assert.equal(body.total_packages, 2);
     });
@@ -334,14 +334,14 @@ describe('index.ts API Routes', () => {
       db.prepare("DELETE FROM sync_meta WHERE key = 'stats_cache'").run();
       const res = await app.request('/api/stats');
       assert.equal(res.status, 200);
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.total_packages, 2);
     });
 
     it('includes null last_sync when sync_meta has no last_incremental_sync', async () => {
       // sync_meta is already cleared in beforeEach
       const res = await app.request('/api/stats');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.last_sync, null);
       assert.equal(body.last_sync_mode, null);
     });
@@ -382,14 +382,14 @@ describe('index.ts API Routes', () => {
   describe('resolvePublisher (via API responses)', () => {
     it('returns the npm username as-is for non-GitHub-Actions publishers', async () => {
       const res = await app.request('/api/packages/pkg-a');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.publisher, 'testuser');
       assert.equal(body.publisher_raw, 'testuser');
     });
 
     it('falls back to repo owner for GitHub Actions packages', async () => {
       const res = await app.request('/api/packages/pkg-b');
-      const body = await res.json();
+      const body = (await res.json()) as any;
       assert.equal(body.publisher, 'maintainer');
       assert.equal(body.publisher_raw, 'GitHub Actions');
     });

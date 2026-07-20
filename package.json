@@ -8,14 +8,17 @@
     "start": "nub backend/index.ts",
     "sync": "nub backend/sync.ts",
     "sync:full": "nub backend/sync.ts --full",
-    "test": "DB_PATH=':memory:' nub --test 'backend/*.test.ts'",
-    "test:coverage": "DB_PATH=':memory:' c8 --include='backend/**/*.ts' --exclude='backend/**/*.test.ts' nub --test 'backend/*.test.ts'"
+    "typecheck": "tsc --noEmit",
+    "test": "DB_PATH=':memory:' nub --test 'backend/*.test.ts' 'frontend/**/*.test.js'",
+    "test:coverage": "DB_PATH=':memory:' c8 --include='backend/**/*.ts' --exclude='backend/**/*.test.ts' nub --test 'backend/*.test.ts' 'frontend/**/*.test.js'"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "hono": "^4.0.0"
   },
   "devDependencies": {
-    "c8": "^11.0.0"
+    "@types/node": "^26.1.1",
+    "c8": "^11.0.0",
+    "typescript": "^7.0.2"
   }
 }

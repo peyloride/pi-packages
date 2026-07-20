@@ -48,7 +48,7 @@ const TRENDING_MIN_DOWNLOADS: Record<Period, number> = {
   monthly: 200,
 };
 
-function parsePeriod(raw: string | null): Period {
+function parsePeriod(raw: string | null | undefined): Period {
   if (raw && (VALID_PERIODS as readonly string[]).includes(raw)) return raw as Period;
   return 'weekly';
 }

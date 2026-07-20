@@ -32,7 +32,7 @@ interface NpmSearchResult {
     links?: { npm?: string; repository?: string };
     date?: string;  // Version publish date
   };
-  score: {
+  score?: {
     detail: { popularity: number };
   };
 }
