@@ -145,6 +145,37 @@ describe('index.ts API Routes', () => {
       assert.equal(body.packages[0].name, 'pkg-a');
     });
 
+    it('treats a LIKE % wildcard in search as a literal character', async () => {
+      // No seeded package contains a percent sign, so a literal '%' matches
+      // nothing. Under the old unescaped interpolation this matched everything.
+      const res = await app.request('/api/packages?search=%25'); // '%'
+      const body = await res.json();
+      assert.equal(body.packages.length, 0);
+      assert.equal(body.pagination.total, 0); // count query is parameterized too
+    });
+
+    it('treats a LIKE _ wildcard in search as a literal character', async () => {
+      const res = await app.request('/api/packages?search=_');
+      const body = await res.json();
+      assert.equal(body.packages.length, 0); // '_' matches any single char if unescaped
+    });
+
+    it('matches a literal wildcard when it actually appears in the data', async () => {
+      db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run('pct-pkg', 'Gives you 100% coverage', '1.0.0', '[]', 'u', 'https://github.com/u/p', 'https://npmjs.com/package/pct-pkg', '2024-01-01', '2024-01-01');
+      const res = await app.request('/api/packages?search=100%25'); // '100%'
+      const body = await res.json();
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pct-pkg');
+    });
+
+    it('handles a single quote in search without error (parameterized)', async () => {
+      const res = await app.request(`/api/packages?search=${encodeURIComponent("O'Brien")}`);
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.packages.length, 0);
+    });
+
     it('applies limit + offset pagination and reports hasMore', async () => {
       const res = await app.request('/api/packages?limit=1&offset=0');
       const body = await res.json();

@@ -54,6 +54,15 @@ function parsePeriod(raw: string | null): Period {
 }
 
 /**
+ * Escape LIKE metacharacters (`%`, `_`, and the escape char `\`) in user input
+ * so they match literally. Used with `LIKE ? ESCAPE '\'`: a search for "100%"
+ * finds the literal string "100%" instead of matching everything.
+ */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
  * Resolve a display name for the publisher field.
  *
  * npm records the trusted-publisher OIDC user as `"GitHub Actions"` for
@@ -175,10 +184,17 @@ export function createApp(): Hono {
       const periodDays = PERIOD_DAYS[period];
       const periodLabel = period === 'daily' ? 'day' : period === 'weekly' ? 'week' : 'month';
 
-      // Build search condition
+      // Build search condition. Parameterized (bound below) rather than
+      // interpolated into the SQL text, with LIKE wildcards in the user input
+      // escaped so a literal '%' or '_' searches for itself instead of matching
+      // everything. The same searchParams bind the count query and the main
+      // query (search placeholders precede LIMIT/OFFSET in the SQL).
       const searchCondition = search
-        ? `AND (p.name LIKE '%${search.replace(/'/g, "''")}%' OR p.description LIKE '%${search.replace(/'/g, "''")}%')`
+        ? `AND (p.name LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\')`
         : '';
+      const searchParams: string[] = search
+        ? [`%${escapeLike(search)}%`, `%${escapeLike(search)}%`]
+        : [];
 
       // Build sort order and extra filter
       let orderBy = '';
@@ -226,7 +242,7 @@ export function createApp(): Hono {
       } else {
         countQuery = `SELECT COUNT(*) as total FROM packages p WHERE ${wherePart}`;
       }
-      const countResult = db.prepare(countQuery).get() as { total: number };
+      const countResult = db.prepare(countQuery).get(...searchParams) as { total: number };
 
       // growth_percent is read from the materialized column (populated at sync
       // time by recomputeGrowthCache). This replaces the inline CASE expression
@@ -259,7 +275,7 @@ export function createApp(): Hono {
         LIMIT ? OFFSET ?
       `;
 
-      const packages = db.prepare(query).all(limit, offset) as any[];
+      const packages = db.prepare(query).all(...searchParams, limit, offset) as any[];
 
       // Batch-fetch sparkline data for all packages in ONE query (was N+1 — a
       // separate `WHERE package_name = ?` per package). 7-day window, capped at
