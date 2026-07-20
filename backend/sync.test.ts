@@ -549,6 +549,46 @@ describe('sync.ts', () => {
       assert.equal(result.newPackages, 0);
       assert.equal(result.updatedPackages, 1);
     });
+
+    it('retains 60 days of download history (prunes only rows older than the window)', async () => {
+      const { runIncrementalSync, upsertPackage } = await import('./sync');
+
+      // An unchanged package with history both inside (45d) and outside (70d)
+      // the 60-day retention window. Under the old 30-day retention the 45-day
+      // row was pruned, which is exactly what starved monthly_growth.
+      upsertPackage({
+        package: { name: 'retain-pkg', version: '1.0.0', links: { npm: 'https://npmjs.com/retain-pkg' } },
+        updated: '2024-01-15',
+      });
+      const day = (n: number) => new Date(Date.now() - n * 86400000).toISOString().split('T')[0];
+      const insert = db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)');
+      insert.run('retain-pkg', day(1), 100);   // recent — always kept
+      insert.run('retain-pkg', day(45), 100);  // kept under 60-day retention (pruned under old 30-day)
+      insert.run('retain-pkg', day(70), 100);  // older than retention — always pruned
+
+      // Record a prior sync (1 day ago) so the run is incremental and the
+      // unchanged package counts as up-to-date (no downloads fetch needed) —
+      // the retention prune still runs at the end of the write transaction.
+      db.prepare("INSERT INTO sync_meta (key, value) VALUES ('last_incremental_sync', ?)").run(new Date(Date.now() - 86400000).toISOString());
+
+      // npm search returns the same version → package is "unchanged".
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          total: 1,
+          objects: [{ package: { name: 'retain-pkg', version: '1.0.0', links: { npm: 'https://npmjs.com/retain-pkg' } }, updated: '2024-01-15' }],
+        }),
+      });
+
+      const result = await runIncrementalSync();
+      assert.equal(result.mode, 'incremental');
+
+      const dates = (db.prepare('SELECT date FROM daily_downloads WHERE package_name = ? ORDER BY date').all('retain-pkg') as Array<{ date: string }>).map(r => r.date);
+      assert.ok(dates.includes(day(1)), 'recent row kept');
+      assert.ok(dates.includes(day(45)), '45-day-old row kept (60-day retention)');
+      assert.ok(!dates.includes(day(70)), '70-day-old row pruned (outside retention)');
+    });
   });
 
   describe('runFullSync', () => {

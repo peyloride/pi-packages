@@ -10,6 +10,13 @@ const BATCH_SIZE = 128; // Packages per bulk download request (npm limit for /ra
 const DOWNLOAD_CONCURRENCY = 8; // Max concurrent npm downloads API requests
 const SYNC_META_KEY = 'last_incremental_sync'; // Key in sync_meta table
 
+// Days of per-package download history to fetch and retain. Must be >= 2x the
+// longest growth period (monthly = 30 days) so the previous-period baseline
+// (days 30-60 ago) actually exists in the DB. With only 30 days retained the
+// monthly baseline was always empty, so monthly_growth was NULL for every
+// package and "trending this month" had no signal to rank on.
+const RETENTION_DAYS = 60;
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -49,7 +56,7 @@ interface NpmRangeDownloadsResponse {
 }
 
 interface DownloadData {
-  daily: Map<string, number>;  // date -> downloads (last 30 days)
+  daily: Map<string, number>;  // date -> downloads (over the fetched range)
   weekly: number;
   monthly: number;
   lastWeek: number;
@@ -103,7 +110,10 @@ async function pMap<T, R>(
 
 /**
  * Aggregate weekly / monthly / last-week download totals from a daily map.
- * `monthStart` is the inclusive lower bound for "monthly" (30-day window).
+ * `monthStart` is the inclusive lower bound for the "monthly" bucket (the
+ * fetched range). These aggregates are only used for the dead-package filter
+ * (skip packages with zero traffic); user-facing monthly downloads are
+ * recomputed from the DB over a fixed 30-day window in the API layer.
  */
 function aggregateStats(
   daily: Map<string, number>,
@@ -360,7 +370,7 @@ async function executeSingleFetch(
  * requests. The npm downloads API tolerates ~10 concurrent requests, which is
  * what we run with by default.
  *
- * Pass `range` to override the default 30-day-back-to-today window.
+ * Pass `range` to override the default RETENTION_DAYS-back-to-today window.
  */
 export async function fetchDownloadsBatched(
   packageNames: string[],
@@ -372,12 +382,12 @@ export async function fetchDownloadsBatched(
   const nonScopedPackages = packageNames.filter(n => !isScopedPackage(n));
 
   const now = new Date();
-  const rangeStart = range?.start ?? fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const rangeStart = range?.start ?? fmt(new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000));
   const rangeEnd = range?.end ?? fmt(now);
   const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
   const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
   // "monthly" bucket uses the same lower bound as the requested range —
-  // by default 30 days back. For short delta ranges this still reflects
+  // by default RETENTION_DAYS back. For short delta ranges this still reflects
   // only what we fetched, which is the same behavior as the legacy path.
   const monthStart = rangeStart;
 
@@ -494,7 +504,7 @@ export function upsertDownloads(packageName: string, data: DownloadData): void {
  * Unified concurrent downloads fetch + persist for an incremental sync.
  *
  * Replaces what used to be two sequential phases:
- *   - 3a: fetch full 30-day range for new/updated packages, per-package
+ *   - 3a: fetch full range for new/updated packages, per-package
  *     DELETE + INSERT (wipe stale rows + rewrite history).
  *   - 3b: fetch delta-range downloads for unchanged packages (sliding window
  *     since last sync), per-day UPSERT (add newer days onto existing history).
@@ -503,14 +513,14 @@ export function upsertDownloads(packageName: string, data: DownloadData): void {
  * `DOWNLOAD_CONCURRENCY`-wide worker pool. Bulk batches cover non-scoped
  * packages (up to `BATCH_SIZE` per request); scoped packages are fetched
  * individually because npm's bulk endpoint doesn't accept them. New/updated
- * packages run with the full 30-day range; unchanged packages run with the
- * delta range (day after last sync -> today), falling back to the full 30-day
- * range if there's no recorded last sync or the gap exceeds 25 days.
+ * packages run with the full RETENTION_DAYS range; unchanged packages run with
+ * the delta range (day after last sync -> today), falling back to the full
+ * range if there's no recorded last sync or the gap nears the retention window.
  *
  * DB writes are serialized into ONE transaction at the end: `node:sqlite`'s
  * `DatabaseSync` is synchronous on a single shared connection, so two
  * concurrent `BEGIN TRANSACTION` blocks would collide. The transaction also
- * prunes `daily_downloads` rows older than 30 days.
+ * prunes `daily_downloads` rows older than RETENTION_DAYS days.
  *
  * Returns the count of packages whose download rows were inserted/upserted.
  */
@@ -521,27 +531,28 @@ async function fetchAndPersistIncrementalDownloads(
 ): Promise<number> {
   const now = new Date();
   const today = fmt(now);
-  const fullRangeStart = fmt(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const fullRangeStart = fmt(new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000));
   const weekAgo = fmt(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
   const twoWeeksAgo = fmt(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
 
-  // Delta range for unchanged packages — fall back to full 30-day range if
-  // we never synced or the gap is too large (>25 days). `runSync()` routes
+  // Delta range for unchanged packages — fall back to the full range if we
+  // never synced or the gap nears the retention window (a delta that large
+  // would just re-fetch rows we're about to prune anyway). `runSync()` routes
   // first-time runs to `runFullSync`, so lastSync should rarely be null here,
   // but the fallback keeps us safe.
   let deltaStart: string;
   if (lastSync) {
     const lastSyncDate = new Date(lastSync);
     const daysSinceSync = (now.getTime() - lastSyncDate.getTime()) / (1000 * 60 * 60 * 24);
-    if (daysSinceSync > 25) {
+    if (daysSinceSync > RETENTION_DAYS - 5) {
       deltaStart = fullRangeStart;
-      console.log(`[Sync] Gap since last sync is ${Math.round(daysSinceSync)} days — using full 30-day range for unchanged packages`);
+      console.log(`[Sync] Gap since last sync is ${Math.round(daysSinceSync)} days — using full ${RETENTION_DAYS}-day range for unchanged packages`);
     } else {
       deltaStart = fmt(new Date(lastSyncDate.getTime() + 24 * 60 * 60 * 1000));
     }
   } else {
     deltaStart = fullRangeStart;
-    console.log('[Sync] No previous sync found — using full 30-day range for unchanged packages');
+    console.log(`[Sync] No previous sync found — using full ${RETENTION_DAYS}-day range for unchanged packages`);
   }
 
   const unchangedUpToDate = deltaStart >= today;
@@ -565,7 +576,7 @@ async function fetchAndPersistIncrementalDownloads(
   };
 
   const tasks: Task[] = [
-    // New + updated: full 30-day range
+    // New + updated: full RETENTION_DAYS range
     ...chunk(newOrUpdatedNonScoped, BATCH_SIZE).map(names => ({
       kind: 'bulk' as const, names, rangeStart: fullRangeStart, rangeEnd: today, fullRange: true as const,
     })),
@@ -584,7 +595,7 @@ async function fetchAndPersistIncrementalDownloads(
   const totalNewOrUpdated = newOrUpdatedNonScoped.length + newOrUpdatedScoped.length;
   const totalUnchanged = unchangedNonScoped.length + unchangedScoped.length;
   console.log(
-    `[Sync] Downloads fetch: ${totalNewOrUpdated} new/updated (full 30-day range) + ` +
+    `[Sync] Downloads fetch: ${totalNewOrUpdated} new/updated (full ${RETENTION_DAYS}-day range) + ` +
     `${totalUnchanged} unchanged (${unchangedUpToDate ? 'up to date, skipped' : `delta ${deltaStart}:${today}`}) ` +
     `— ${tasks.length} tasks at concurrency=${DOWNLOAD_CONCURRENCY}`,
   );
@@ -638,9 +649,9 @@ async function fetchAndPersistIncrementalDownloads(
       for (const [pkgName, data] of map) {
         if (fullRange) {
           // New/updated path: skip dead packages (zero traffic over the
-          // full 30-day range) — preserves the legacy filter and avoids
-          // writing 30 zero rows for packages nobody uses. Existing rows
-          // for previously-live packages are intentionally preserved.
+          // full fetched range) — preserves the legacy filter and avoids
+          // writing a window of zero rows for packages nobody uses. Existing
+          // rows for previously-live packages are intentionally preserved.
           if (data.weekly === 0 && data.monthly === 0) continue;
           deleteStmt.run(pkgName);
         }
@@ -650,7 +661,7 @@ async function fetchAndPersistIncrementalDownloads(
         downloadsUpdated++;
       }
     }
-    // Prune anything older than the 30-day window.
+    // Prune anything older than the retention window.
     db.prepare('DELETE FROM daily_downloads WHERE date < ?').run(fullRangeStart);
     db.exec('COMMIT');
   } catch (err) {
@@ -677,7 +688,7 @@ async function fetchAndPersistIncrementalDownloads(
  * 2. Diffs against DB to find new/changed packages.
  * 3. Upserts only new/changed package metadata (DB transaction — fast).
  * 4. Fetches downloads concurrently in one pass:
- *      - new/updated packages get the full 30-day range (DELETE + INSERT)
+ *      - new/updated packages get the full RETENTION_DAYS range (DELETE + INSERT)
  *      - unchanged packages get the delta range since last sync (UPSERT)
  *    All npm requests share a single `DOWNLOAD_CONCURRENCY`-wide worker
  *    pool. DB writes are serialized into one transaction at the end.
@@ -715,7 +726,7 @@ export async function runIncrementalSync(): Promise<SyncResult> {
   }
 
   // 4. Unified concurrent downloads fetch + persist (merged former phases 3a + 3b)
-  //    - new/updated: full 30-day range, per-package DELETE + INSERT
+  //    - new/updated: full RETENTION_DAYS range, per-package DELETE + INSERT
   //    - unchanged: delta range since last sync, per-day UPSERT
   //    Both fan out through one DOWNLOAD_CONCURRENCY-wide worker pool.
   const lastSync = getSyncMeta(SYNC_META_KEY);
@@ -751,7 +762,7 @@ export async function runIncrementalSync(): Promise<SyncResult> {
  *
  * 1. Fetches all package metadata from npm search
  * 2. Upserts all package records
- * 3. Re-fetches full 30-day download data for ALL packages
+ * 3. Re-fetches full RETENTION_DAYS download data for ALL packages
  *
  * Use this for initial setup or periodic full refreshes (e.g. weekly).
  */
