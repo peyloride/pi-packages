@@ -102,10 +102,12 @@ describe('compress.ts', () => {
     assert.ok(decompressed.includes('"data"'));
   });
 
-  it('adds Vary: Accept-Encoding when compressing', async () => {
+  it('adds a single Vary: Accept-Encoding when compressing (no duplicate)', async () => {
     const res = await app.request('/text', { headers: { 'Accept-Encoding': 'br' } });
     const vary = res.headers.get('Vary');
     assert.ok(vary?.includes('Accept-Encoding'), `expected Vary to include Accept-Encoding, got ${vary}`);
+    const count = vary!.split(',').map((s) => s.trim()).filter((s) => s === 'Accept-Encoding').length;
+    assert.equal(count, 1, `expected exactly one Accept-Encoding in Vary, got: ${vary}`);
   });
 
   it('respects q=0 to reject a preferred encoding and fall back', async () => {

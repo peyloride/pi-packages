@@ -92,12 +92,12 @@ export function startCron(): void {
 }
 
 /**
- * Get the next scheduled run time (for the next upcoming event — incremental or full).
- * Only works for simple fixed-time crons like "0 3 * * *".
- * Returns null for interval patterns like "0 *\/4 * * *".
+ * Compute the next fire time for a simple fixed-time cron like "0 3 * * *".
+ * Returns null for interval/wildcard patterns (e.g. "0 *\/4 * * *", "0 * * * *")
+ * whose next fire can't be derived from a single fixed hour+minute.
  */
-export function getNextRunTime(): Date | null {
-  const schedule = parseCron(SYNC_FULL_CRON);
+function nextFixedTime(expression: string): Date | null {
+  const schedule = parseCron(expression);
 
   // Can only compute next run for simple fixed-time crons
   if (schedule.hour === '*' || schedule.minute === '*') return null;
@@ -111,6 +111,21 @@ export function getNextRunTime(): Date | null {
   }
 
   return next;
+}
+
+/**
+ * Get the next scheduled run time — the soonest of the incremental and full
+ * sync schedules. Previously this only looked at the full sync, so next_sync
+ * ignored a more-frequent fixed-time incremental schedule. Each component is
+ * only computable for fixed-time crons; interval patterns (the default
+ * hourly / 4-hourly incremental sync) contribute null. Returns null only when
+ * neither schedule is a fixed-time cron.
+ */
+export function getNextRunTime(): Date | null {
+  const candidates = [nextFixedTime(SYNC_CRON), nextFixedTime(SYNC_FULL_CRON)]
+    .filter((d): d is Date => d !== null);
+  if (candidates.length === 0) return null;
+  return new Date(Math.min(...candidates.map((d) => d.getTime())));
 }
 
 export function isSyncRunning(): boolean {

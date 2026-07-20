@@ -114,7 +114,10 @@ export function compress() {
     const newHeaders = new Headers(headers);
     newHeaders.delete('Content-Length');
     newHeaders.set('Content-Encoding', encoding);
-    newHeaders.append('Vary', 'Accept-Encoding');
+    // NOTE: Vary is added via c.header() below, not here. Appending it to
+    // newHeaders as well produced a duplicate `Vary: Accept-Encoding,
+    // Accept-Encoding` — Hono leaves newHeaders' Vary intact (the original
+    // response had none to clobber it) AND applies the c.header() value.
     // Encoding changes the byte representation → strong ETag must become weak.
     const etag = newHeaders.get('ETag');
     if (etag && !etag.startsWith('W/')) {
