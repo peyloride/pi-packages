@@ -161,6 +161,28 @@ describe('index.ts API Routes', () => {
       assert.ok(body.pagination.limit <= 100);
     });
 
+    it('clamps a negative limit to 1 (SQLite treats negative LIMIT as unbounded)', async () => {
+      const res = await app.request('/api/packages?limit=-1');
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.pagination.limit, 1);
+      assert.equal(body.packages.length, 1);
+    });
+
+    it('falls back to the default limit on non-numeric input', async () => {
+      const res = await app.request('/api/packages?limit=abc');
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.pagination.limit, 50);
+    });
+
+    it('clamps a negative offset to 0', async () => {
+      const res = await app.request('/api/packages?offset=-5');
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.pagination.offset, 0);
+    });
+
     it('returns growth from the materialized column for growing packages', async () => {
       const res = await app.request('/api/packages?sort=trending&period=weekly');
       const body = await res.json();

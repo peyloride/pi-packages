@@ -153,8 +153,11 @@ export function createApp(): Hono {
       const sort = c.req.query('sort') || 'popular';
       const period = parsePeriod(c.req.query('period'));
       const search = c.req.query('search') || '';
-      const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100);
-      const offset = parseInt(c.req.query('offset') || '0', 10);
+      // Clamp to a sane range. parseInt can yield NaN (non-numeric input) or
+      // negatives, and SQLite treats a negative LIMIT as "no bound" (returns
+      // every row), so an unclamped `?limit=-1` would bypass the 100-row cap.
+      const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10) || 50, 1), 100);
+      const offset = Math.max(parseInt(c.req.query('offset') || '0', 10) || 0, 0);
 
       const key = responseCache.key(['packages', sort, period, search, String(limit), String(offset)]);
       const cached = responseCache.get(key);
