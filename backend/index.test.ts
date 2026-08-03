@@ -376,6 +376,89 @@ describe('index.ts API Routes', () => {
   });
 
   // ===========================================================================
+  // Security headers (CSP / nosniff / referrer-policy / X-Frame-Options)
+  // ===========================================================================
+
+  describe('security headers', () => {
+    const CSP = 'Content-Security-Policy';
+
+    it('serves a strict CSP + XFO + nosniff + referrer-policy on HTML (/)', async () => {
+      const res = await app.request('/');
+      assert.equal(res.status, 200);
+
+      const csp = res.headers.get(CSP);
+      assert.ok(csp);
+      // default-src 'self' — block foreign origins
+      assert.ok(csp.includes("default-src 'self'"));
+      // script-src 'self' — no inline scripts, no unsafe-eval
+      assert.ok(csp.includes("script-src 'self'"));
+      // style-src allows the known inline style + Google Fonts CSS
+      assert.ok(csp.includes("style-src 'self' 'unsafe-inline' https://fonts.googleapis.com"));
+      // font-src allows Google Fonts font files
+      assert.ok(csp.includes("font-src 'self' https://fonts.gstatic.com"));
+      // cheap hardening directives
+      assert.ok(csp.includes("img-src 'self' data:"));
+      assert.ok(csp.includes("connect-src 'self'"));
+      assert.ok(csp.includes("base-uri 'self'"));
+      assert.ok(csp.includes("form-action 'self'"));
+      assert.ok(csp.includes("frame-ancestors 'none'"));
+
+      assert.equal(res.headers.get('X-Frame-Options'), 'DENY');
+      assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+      assert.equal(res.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+    });
+
+    it('serves CSP + XFO + nosniff + referrer-policy on the SPA fallback (HTML)', async () => {
+      const res = await app.request('/nonexistent');
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('content-type')?.startsWith('text/html'));
+
+      const csp = res.headers.get(CSP);
+      assert.ok(csp);
+      assert.ok(csp.includes("script-src 'self'"));
+      assert.ok(csp.includes("frame-ancestors 'none'"));
+      assert.equal(res.headers.get('X-Frame-Options'), 'DENY');
+      assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+      assert.equal(res.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+    });
+
+    it('serves nosniff + referrer-policy (no CSP) on static assets', async () => {
+      const res = await app.request('/styles.css');
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('content-type')?.startsWith('text/css'));
+
+      assert.equal(res.headers.get(CSP), null); // CSP is HTML-only
+      assert.equal(res.headers.get('X-Frame-Options'), null); // XFO is HTML-only
+      assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+      assert.equal(res.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+    });
+
+    it('serves nosniff + referrer-policy (no CSP) on API JSON', async () => {
+      const res = await app.request('/api/stats');
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('content-type')?.startsWith('application/json'));
+
+      assert.equal(res.headers.get(CSP), null);
+      assert.equal(res.headers.get('X-Frame-Options'), null);
+      assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+      assert.equal(res.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+    });
+
+    it('does not duplicate or clobber headers when compression runs', async () => {
+      // Compress middleware re-routes headers through c.header(); security
+      // headers must survive a compressed response.
+      const res = await app.request('/', { headers: { 'Accept-Encoding': 'gzip' } });
+      assert.equal(res.status, 200);
+      const csp = res.headers.get(CSP);
+      assert.ok(csp);
+      assert.equal((csp.match(/script-src/g) || []).length, 1, 'CSP directive appears exactly once');
+      assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+      assert.equal(res.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
+      assert.equal(res.headers.get('X-Frame-Options'), 'DENY');
+    });
+  });
+
+  // ===========================================================================
   // Helper functions (exercised indirectly via routes above)
   // ===========================================================================
 

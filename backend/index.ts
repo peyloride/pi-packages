@@ -126,6 +126,60 @@ function createResponseCache() {
   return { key, get, set };
 }
 
+// -----------------------------------------------------------------------------
+// Security headers — CSP + nosniff + referrer policy + X-Frame-Options.
+//
+// All responses get nosniff + Referrer-Policy (cheap, universally safe). HTML
+// responses additionally get a strict CSP (blocks inline scripts + foreign
+// origins — the app has none) and X-Frame-Options: DENY (legacy framing guard
+// complementing frame-ancestors 'none'). Applied after next() so headers are
+// set on the final response of whichever route handled the request.
+//
+// Not using @hono/secure-headers: keeping zero dependencies, and the default
+// CSP it ships with would need overriding for Google Fonts + unsafe-inline
+// styles anyway. Full rationale in design.md (D1-D3).
+// -----------------------------------------------------------------------------
+
+const SECURITY_HEADERS_COMMON = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+};
+
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+const SECURITY_HEADERS_HTML = {
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+  'X-Frame-Options': 'DENY',
+};
+
+function securityHeaders() {
+  return async (c: any, next: () => Promise<void>) => {
+    await next();
+
+    const res = c.res as Response;
+    const contentType = res.headers.get('Content-Type') ?? '';
+
+    const isHtml = contentType.toLowerCase().startsWith('text/html');
+    const headers = isHtml
+      ? { ...SECURITY_HEADERS_COMMON, ...SECURITY_HEADERS_HTML }
+      : SECURITY_HEADERS_COMMON;
+
+    for (const [name, value] of Object.entries(headers)) {
+      c.header(name, value);
+    }
+  };
+}
+
 // =============================================================================
 // App factory — used by both the production server (startServer) and tests.
 // All middleware, routes, and per-instance caches live here so importing
@@ -138,6 +192,24 @@ export function createApp(): Hono {
 
   // CORS for local development
   app.use('/*', cors());
+
+  // Security headers: defense-in-depth for untrusted npm-sourced data.
+  //
+  // Deliberately dependency-free (no @hono/secure-headers): a ~20-line helper
+  // with an exact, audited CSP beats a dependency whose defaults need
+  // overriding anyway. Applied before compress() so the headers stay on the
+  // response regardless of body encoding.
+  //
+  // CSP notes (see openspec/changes/security-headers/design.md D3):
+  //   - script-src 'self'  — all JS is served same-origin with ?v= stamps;
+  //     no inline scripts exist (audited), so none are allowed. Adding one
+  //     later fails loudly in devtools.
+  //   - style-src 'unsafe-inline' — required by the static
+  //     style="cursor: default" ellipsis in pagination.js (+ future dynamic
+  //     style mutations). Scoped to styles only.
+  //   - fonts.googleapis.com / fonts.gstatic.com — Google Fonts <link> in
+  //     index.html (stylesheet CSS + @font-face font files).
+  app.use('/*', securityHeaders());
 
   // Response compression (brotli > gzip > deflate). Registered before etag so
   // compression runs OUTSIDE etag: etag computes its validator on the raw body
