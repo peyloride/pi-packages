@@ -40,6 +40,17 @@ export function initializeSchema(database: DatabaseSync): void {
       value TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS repo_meta (
+      repo TEXT PRIMARY KEY,
+      stars INTEGER,
+      forks INTEGER,
+      open_issues INTEGER,
+      license TEXT,
+      archived INTEGER,
+      pushed_at TEXT,
+      fetched_at TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_downloads_package ON daily_downloads(package_name);
     CREATE INDEX IF NOT EXISTS idx_downloads_date ON daily_downloads(date);
     CREATE INDEX IF NOT EXISTS idx_packages_first_seen ON packages(first_seen);
@@ -53,6 +64,10 @@ export function initializeSchema(database: DatabaseSync): void {
   addColumnIfMissing(database, 'packages', 'daily_growth', 'REAL');
   addColumnIfMissing(database, 'packages', 'weekly_growth', 'REAL');
   addColumnIfMissing(database, 'packages', 'monthly_growth', 'REAL');
+  // Normalized `owner/repo` key (lowercased) parsed from github_url at sync
+  // time (see sync.ts upsertPackage). Enables a plain equality LEFT JOIN
+  // against repo_meta.repo in the API — SQLite can't reliably parse URLs.
+  addColumnIfMissing(database, 'packages', 'github_repo', 'TEXT');
 }
 
 /**

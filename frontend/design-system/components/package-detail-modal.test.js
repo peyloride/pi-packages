@@ -143,6 +143,18 @@ const SAMPLE_PKG = {
   ],
 };
 
+const SAMPLE_PKG_WITH_GITHUB = {
+  ...SAMPLE_PKG,
+  github: {
+    stars: 1234,
+    forks: 56,
+    open_issues: 7,
+    license: 'MIT',
+    archived: false,
+    pushed_at: '2026-06-01T00:00:00Z',
+  },
+};
+
 function okResponse(body, status = 200) {
   return { ok: status < 400, status, json: async () => body };
 }
@@ -286,5 +298,62 @@ describe('openPackageDetailModal', () => {
     // Click event target is the dialog, not overlay
     overlay.dispatchEvent({ type: 'click', target: dialog });
     assert.equal(closed, false);
+  });
+
+  it('renders a GitHub stats strip when github metadata is present', async () => {
+    resetDom();
+    const handle = openPackageDetailModal({
+      name: 'pi-dgoal',
+      fetchFn: () => Promise.resolve(okResponse(SAMPLE_PKG_WITH_GITHUB)),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const overlay = fakeBody.children[0];
+    const body = overlay.querySelector('.modal-body');
+    const strip = body.querySelector('.github-strip');
+    assert.ok(strip, 'github-strip should render');
+
+    const values = strip.querySelectorAll('.gh-stat-value').map((el) => el.textContent);
+    assert.ok(values.some((v) => v.includes('1.2K')));    // stars formatted (formatNumber compacts >1k)
+    assert.ok(values.some((v) => v.includes('56')));       // forks
+    assert.ok(values.some((v) => v.includes('7')));        // open issues
+    assert.ok(strip.querySelector('.license-chip'));       // license chip
+    assert.equal(strip.querySelector('.license-chip').textContent, 'MIT');
+    assert.equal(strip.querySelector('.archived-badge'), null); // not archived
+  });
+
+  it('renders no github strip when github is null', async () => {
+    resetDom();
+    const handle = openPackageDetailModal({
+      name: 'pi-dgoal',
+      fetchFn: () => Promise.resolve(okResponse(SAMPLE_PKG)), // no github field
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const overlay = fakeBody.children[0];
+    const body = overlay.querySelector('.modal-body');
+    assert.equal(body.querySelector('.github-strip'), null);
+    // Everything else still renders
+    assert.ok(body.querySelector('.modal-description'));
+    assert.ok(body.querySelector('.modal-stat'));
+  });
+
+  it('shows an archived warning badge when github.archived is true', async () => {
+    resetDom();
+    const archivedPkg = {
+      ...SAMPLE_PKG_WITH_GITHUB,
+      github: { ...SAMPLE_PKG_WITH_GITHUB.github, archived: true },
+    };
+    const handle = openPackageDetailModal({
+      name: 'pi-dgoal',
+      fetchFn: () => Promise.resolve(okResponse(archivedPkg)),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const overlay = fakeBody.children[0];
+    const body = overlay.querySelector('.modal-body');
+    const badge = body.querySelector('.archived-badge');
+    assert.ok(badge);
+    assert.equal(badge.textContent, 'ARCHIVED');
   });
 });

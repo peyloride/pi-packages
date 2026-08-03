@@ -162,6 +162,48 @@ export function openPackageDetailModal(options = {}) {
   }
 
   /**
+   * GitHub stats strip shown in the modal when the package has repo metadata.
+   * All values are GitHub-sourced (untrusted) — rendered as textContent only.
+   */
+  function renderGithubStrip(github) {
+    const strip = document.createElement('div');
+    strip.className = 'github-strip';
+
+    const stat = (label, value) => {
+      const s = document.createElement('span');
+      s.className = 'gh-stat';
+      const v = document.createElement('span');
+      v.className = 'gh-stat-value';
+      v.textContent = value;
+      const l = document.createElement('span');
+      l.className = 'gh-stat-label';
+      l.textContent = label;
+      s.appendChild(v);
+      s.appendChild(l);
+      return s;
+    };
+
+    if (typeof github.stars === 'number') strip.appendChild(stat('★ stars', formatNumber(github.stars)));
+    if (typeof github.forks === 'number') strip.appendChild(stat('⑂ forks', formatNumber(github.forks)));
+    if (typeof github.open_issues === 'number') strip.appendChild(stat('⚠ issues', formatNumber(github.open_issues)));
+    if (github.license) {
+      const chip = document.createElement('span');
+      chip.className = 'license-chip';
+      chip.textContent = escapeHtml(github.license);
+      strip.appendChild(chip);
+    }
+    if (github.archived) {
+      const warn = document.createElement('span');
+      warn.className = 'archived-badge';
+      warn.textContent = 'ARCHIVED';
+      strip.appendChild(warn);
+    }
+
+    if (strip.children.length === 0) return null;
+    return strip;
+  }
+
+  /**
    * Build the detail view. ALL npm-sourced fields are escaped text or
    * sanitized URLs — the registry is untrusted input (see package-card.js).
    */
@@ -206,6 +248,12 @@ export function openPackageDetailModal(options = {}) {
     });
     addMeta('First seen', (dd) => { dd.textContent = d.first_seen ? timeAgo(d.first_seen) : '—'; });
     addMeta('Last publish', (dd) => { dd.textContent = d.last_publish ? timeAgo(d.last_publish) : '—'; });
+
+    // GitHub stat strip (present only when the API returned non-null github)
+    if (d.github && typeof d.github === 'object') {
+      const strip = renderGithubStrip(d.github);
+      if (strip) wrap.appendChild(strip);
+    }
 
     // Links
     const githubHref = sanitizeUrl(d.github_url);
@@ -290,8 +338,7 @@ export function openPackageDetailModal(options = {}) {
     }
 
     // Install command + copy
-    const installWrap = document.createElement('div');
-    installWrap.className = 'modal-install';
+    const installWrap = document.createElement('div');    installWrap.className = 'modal-install';
     const code = document.createElement('code');
     code.className = 'install-cmd';
     code.textContent = `pi install npm:${d.name}`;

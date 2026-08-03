@@ -25,6 +25,13 @@ describe('index.ts API Routes', () => {
     db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run('pkg-b', 'Package B', '2.0.0', '[]', 'GitHub Actions', 'https://github.com/maintainer/pkg-b', 'https://npmjs.com/package/pkg-b', '2024-06-01', '2024-06-15');
 
+    // Seed GitHub repo metadata for pkg-a; leave pkg-b without any (to test
+    // the null contract). github_repo mirrors what sync would write.
+    db.prepare(`UPDATE packages SET github_repo = ? WHERE name = ?`).run('test/pkg-a', 'pkg-a');
+    db.prepare(`UPDATE packages SET github_repo = ? WHERE name = ?`).run('maintainer/pkg-b', 'pkg-b');
+    db.prepare(`INSERT INTO repo_meta (repo, stars, forks, open_issues, license, archived, pushed_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('test/pkg-a', 1234, 56, 7, 'MIT', 0, '2024-01-10T00:00:00Z', '2024-01-10T00:00:00Z');
+
     for (let i = 0; i < 14; i++) {
       const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
       // pkg-a growing: 100/day this week, 50/day last week
@@ -43,6 +50,7 @@ describe('index.ts API Routes', () => {
   afterEach(() => {
     db.prepare('DELETE FROM daily_downloads').run();
     db.prepare('DELETE FROM packages').run();
+    db.prepare('DELETE FROM repo_meta').run();
     db.prepare('DELETE FROM sync_meta').run();
   });
 
@@ -96,6 +104,29 @@ describe('index.ts API Routes', () => {
       assert.ok(pkg);
       assert.equal(pkg.publisher, 'maintainer'); // parsed from github.com/maintainer/pkg-b
       assert.equal(pkg.publisher_raw, 'GitHub Actions');
+    });
+
+    it('includes the github object for packages with repo metadata', async () => {
+      const res = await app.request('/api/packages');
+      const body = (await res.json()) as any;
+      const pkg = body.packages.find((p: any) => p.name === 'pkg-a');
+      assert.ok(pkg);
+      assert.deepEqual(pkg.github, {
+        stars: 1234,
+        forks: 56,
+        open_issues: 7,
+        license: 'MIT',
+        archived: false,
+        pushed_at: '2024-01-10T00:00:00Z',
+      });
+    });
+
+    it('returns github: null for packages without repo metadata', async () => {
+      const res = await app.request('/api/packages');
+      const body = (await res.json()) as any;
+      const pkg = body.packages.find((p: any) => p.name === 'pkg-b');
+      assert.ok(pkg);
+      assert.equal(pkg.github, null);
     });
 
     it('supports the "trending" sort mode and applies the volume floor', async () => {
@@ -295,6 +326,33 @@ describe('index.ts API Routes', () => {
       const res = await app.request('/api/packages/pkg-a');
       const body = (await res.json()) as any;
       assert.equal(body.growth, null);
+    });
+
+    it('includes the github object for a package with repo metadata', async () => {
+      const res = await app.request('/api/packages/pkg-a');
+      const body = (await res.json()) as any;
+      assert.deepEqual(body.github, {
+        stars: 1234,
+        forks: 56,
+        open_issues: 7,
+        license: 'MIT',
+        archived: false,
+        pushed_at: '2024-01-10T00:00:00Z',
+      });
+    });
+
+    it('always includes github (null) for a package without repo metadata', async () => {
+      const res = await app.request('/api/packages/pkg-b');
+      const body = (await res.json()) as any;
+      assert.ok('github' in body);
+      assert.equal(body.github, null);
+    });
+
+    it('returns archived as a real boolean', async () => {
+      db.prepare('UPDATE repo_meta SET archived = 1 WHERE repo = ?').run('test/pkg-a');
+      const res = await app.request('/api/packages/pkg-a');
+      const body = (await res.json()) as any;
+      assert.equal(body.github.archived, true);
     });
   });
 

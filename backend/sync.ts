@@ -429,6 +429,22 @@ export async function fetchDownloadsBatched(
 // =============================================================================
 
 /**
+ * Normalize a GitHub repository URL to a lowercased `owner/repo` key.
+ *
+ * Accepts https://github.com/owner/repo, git+https://..., and trailing
+ * variants (.git, trailing slash). Returns null for anything that isn't a
+ * github.com URL with a two-part path. The lowercased key is the join key
+ * for repo_meta (design D1): `Org/Repo` and `org/repo` collapse to one row.
+ */
+export function normalizeGithubRepo(githubUrl: string | null | undefined): string | null {
+  if (!githubUrl) return null;
+  const cleaned = githubUrl.replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/$/, '');
+  const m = cleaned.match(/github\.com\/([^/?#]+)\/([^/?#]+)/i);
+  if (!m) return null;
+  return `${m[1].toLowerCase()}/${m[2].toLowerCase()}`;
+}
+
+/**
  * Persist package metadata to SQLite
  */
 export function upsertPackage(pkg: NpmSearchResult): void {
@@ -442,14 +458,15 @@ export function upsertPackage(pkg: NpmSearchResult): void {
   }
 
   const stmt = db.prepare(`
-    INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, github_repo)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       description = excluded.description,
       version = excluded.version,
       keywords = excluded.keywords,
       publisher = excluded.publisher,
       github_url = excluded.github_url,
+      github_repo = excluded.github_repo,
       last_publish = excluded.last_publish
   `);
 
@@ -463,6 +480,7 @@ export function upsertPackage(pkg: NpmSearchResult): void {
     pkg.package.links?.npm || `https://www.npmjs.com/package/${pkg.package.name}`,
     pkg.package.date || now,
     pkg.updated || null,
+    normalizeGithubRepo(githubUrl),
   );
 }
 
@@ -679,6 +697,29 @@ async function fetchAndPersistIncrementalDownloads(
 // Sync entry points
 // =============================================================================
 
+/**
+ * Best-effort GitHub repo metadata enrichment.
+ *
+ * Delegates to repoMeta.syncRepoMeta() but never lets a GitHub API failure
+ * (outage, rate limit, malformed response) fail the npm sync. Errors are
+ * logged and swallowed; a disabled budget is a silent no-op.
+ *
+ * Lazy dynamic import keeps the npm-downloads critical path unforgeable:
+ * repoMeta.ts is only evaluated when a sync actually runs, so a defect there
+ * can never break the server's static import graph.
+ */
+async function enrichRepoMetaSafely(): Promise<void> {
+  try {
+    const { syncRepoMeta } = await import('./repoMeta');
+    const result = await syncRepoMeta();
+    if (result.fetched > 0) {
+      console.log(`[Sync] GitHub repo meta: fetched ${result.fetched} repos (${result.total} total tracked)`);
+    }
+  } catch (err) {
+    console.warn('[Sync] GitHub repo metadata enrichment skipped (non-fatal):', err instanceof Error ? err.message : err);
+  }
+}
+
 
 /**
  * Incremental sync — fast periodic update.
@@ -735,6 +776,11 @@ export async function runIncrementalSync(): Promise<SyncResult> {
     diff.unchangedPackages,
     lastSync,
   );
+
+  // 4b. Best-effort GitHub repo metadata enrichment. Never blocks or fails
+  // the sync — download freshness is the critical path; a GitHub API outage
+  // or rate limit must not break the next scheduled sync. See repoMeta.ts.
+  await enrichRepoMetaSafely();
 
   // 5. Mark packages as removed if they disappeared from npm
   if (diff.removedNames.length > 0) {
@@ -820,6 +866,9 @@ export async function runFullSync(): Promise<SyncResult> {
     db.exec('ROLLBACK');
     throw err;
   }
+
+  // 4b. Best-effort GitHub repo metadata enrichment (same as incremental).
+  await enrichRepoMetaSafely();
 
   // 6. Record sync timestamp
   setSyncMeta(SYNC_META_KEY, new Date().toISOString());

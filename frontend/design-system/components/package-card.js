@@ -38,6 +38,8 @@ export class PackageCard {
       // `showNewBadge: false` / `staleThresholdDays: N` to customize.
       showNewBadge: options.showNewBadge !== false,
       staleThresholdDays: options.staleThresholdDays !== undefined ? options.staleThresholdDays : 30,
+      // GitHub star count next to the GitHub link when repo metadata exists.
+      showStars: options.showStars !== false,
       ...options
     };
 
@@ -69,6 +71,21 @@ export class PackageCard {
     // Escape the href for the attribute context too (a URL may contain `"`).
     const profileHref = profileLink ? escapeHtml(profileLink.href) : '#';
 
+    // Freshness (pure classification, see js/freshness.js). NEW badge shows
+    // for packages first seen within NEW_DAYS (inclusive); the stale chip
+    // replaces the plain updated label for packages not published in
+    // staleThresholdDays+ days. Badge labels are static trusted strings.
+    const { isNew, isStale, updatedLabel } = getFreshness(
+      Date.now(),
+      data.first_seen,
+      data.last_publish,
+      timeAgo,
+      { staleDays: options.staleThresholdDays },
+    );
+    const newBadgeHtml = options.showNewBadge && isNew
+      ? `<span class="badge badge-new">NEW</span>`
+      : '';
+
     // Build stats HTML
     const downloadsLabel = escapeHtml(data.downloads_label || '/week');
     const statsHtml = `
@@ -98,25 +115,15 @@ export class PackageCard {
     if (profileLink) {
       metaItems.push(`<a class="meta-item link-github" href="${profileHref}" target="_blank" rel="noopener">${profileLink.label}</a>`);
     }
+    // GitHub star count when repo metadata exists (github is GitHub-sourced =
+    // untrusted; the number is formatted, never interpolated raw).
+    if (options.showStars && data.github && typeof data.github === 'object' && typeof data.github.stars === 'number' && data.github.stars > 0) {
+      metaItems.push(`<span class="meta-item card-stars" title="GitHub stars">★ ${formatNumber(data.github.stars)}</span>`);
+    }
 
     // Build version HTML
     const versionHtml = options.showVersion && data.version
       ? `<span class="package-version">v${safeVersion}</span>`
-      : '';
-
-    // Freshness (pure classification, see js/freshness.js). NEW badge shows
-    // for packages first seen within NEW_DAYS (inclusive); the stale chip
-    // replaces the plain updated label for packages not published in
-    // staleThresholdDays+ days. Badge labels are static trusted strings.
-    const { isNew, isStale, updatedLabel } = getFreshness(
-      Date.now(),
-      data.first_seen,
-      data.last_publish,
-      timeAgo,
-      { staleDays: options.staleThresholdDays },
-    );
-    const newBadgeHtml = options.showNewBadge && isNew
-      ? `<span class="badge badge-new">NEW</span>`
       : '';
 
     // Build install command: `pi install <sourceType>:<spec>` with no space

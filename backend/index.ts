@@ -88,6 +88,30 @@ function resolvePublisher(publisher: string | null, githubUrl: string | null): {
   return { publisher: publisher || null, publisher_raw: raw };
 }
 
+/**
+ * Map a repo_meta SQL row into the API's `github` object (or null).
+ *
+ * Contract (design D6): `github` is either an object with the stored fields
+ * or null — never undefined, never an error — for both the list and detail
+ * endpoints. `archived` is normalized to a real boolean from SQLite's 0/1.
+ *
+ * `gh_present` is the LEFT JOIN hit (`r.repo IS NOT NULL`): a package whose
+ * repo_meta row is entirely null-valued (stars IS NULL after a 404) must
+ * still yield an object (the repo IS tracked, just empty), while a package
+ * with no repo_meta row at all must yield null.
+ */
+function mapGithub(row: any): { stars: number | null; forks: number | null; open_issues: number | null; license: string | null; archived: boolean; pushed_at: string | null } | null {
+  if (!row?.gh_present) return null;
+  return {
+    stars: row.gh_stars ?? null,
+    forks: row.gh_forks ?? null,
+    open_issues: row.gh_open_issues ?? null,
+    license: row.gh_license ?? null,
+    archived: row.gh_archived === 1 || row.gh_archived === true,
+    pushed_at: row.gh_pushed_at ?? null,
+  };
+}
+
 // -----------------------------------------------------------------------------
 // In-memory response cache for expensive GET endpoints.
 //
@@ -335,11 +359,19 @@ export function createApp(): Hono {
           p.first_seen,
           p.last_publish,
           p.${growthColumn} as growth_percent,
+          CASE WHEN r.repo IS NOT NULL THEN 1 ELSE 0 END as gh_present,
+          r.stars as gh_stars,
+          r.forks as gh_forks,
+          r.open_issues as gh_open_issues,
+          r.license as gh_license,
+          r.archived as gh_archived,
+          r.pushed_at as gh_pushed_at,
           COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) as period_downloads,
           COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) as weekly_downloads,
           COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) as monthly_downloads
         FROM packages p
         LEFT JOIN daily_downloads d ON p.name = d.package_name
+        LEFT JOIN repo_meta r ON r.repo = p.github_repo
         WHERE ${wherePart}
         GROUP BY p.name
         ${havingPart}
@@ -401,6 +433,7 @@ export function createApp(): Hono {
           monthly_downloads: pkg.monthly_downloads,
           growth,
           sparkline,
+          github: mapGithub(pkg),
         };
       });
 
@@ -433,8 +466,23 @@ export function createApp(): Hono {
       const db = getDb();
       const name = c.req.param('name');
 
+      // Explicit column list (not SELECT *) so the new github_repo column
+      // doesn't leak into the response and the repo_meta JOIN is explicit.
       const pkg = db.prepare(`
-        SELECT * FROM packages WHERE name = ?
+        SELECT
+          p.name, p.description, p.version, p.keywords, p.publisher,
+          p.github_url, p.npm_url, p.first_seen, p.last_publish,
+          p.daily_growth, p.weekly_growth, p.monthly_growth,
+          CASE WHEN r.repo IS NOT NULL THEN 1 ELSE 0 END as gh_present,
+          r.stars as gh_stars,
+          r.forks as gh_forks,
+          r.open_issues as gh_open_issues,
+          r.license as gh_license,
+          r.archived as gh_archived,
+          r.pushed_at as gh_pushed_at
+        FROM packages p
+        LEFT JOIN repo_meta r ON r.repo = p.github_repo
+        WHERE p.name = ?
       `).get(name) as any;
 
       if (!pkg) {
@@ -469,16 +517,23 @@ export function createApp(): Hono {
       const { publisher, publisher_raw } = resolvePublisher(pkg.publisher, pkg.github_url);
 
       return c.json({
-        ...pkg,
+        name: pkg.name,
+        description: pkg.description,
+        version: pkg.version,
+        keywords: pkg.keywords ? JSON.parse(pkg.keywords) : [],
         publisher,
         publisher_raw,
-        keywords: pkg.keywords ? JSON.parse(pkg.keywords) : [],
+        github_url: pkg.github_url,
+        npm_url: pkg.npm_url,
+        first_seen: pkg.first_seen,
+        last_publish: pkg.last_publish,
         daily_downloads: dailyDownloads,
         weekly_downloads: weeklyDownloads,
         monthly_downloads: monthlyDownloads,
         growth,
         download_history: downloads,
         sparkline,
+        github: mapGithub(pkg),
       });
     } catch (err) {
       console.error('[API] Error fetching package:', err);

@@ -798,6 +798,59 @@
   padding: 2px 10px;
 }
 
+/* GitHub stats strip in the detail modal (repo metadata from repo_meta) */
+.github-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.gh-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.gh-stat-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.gh-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.license-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+}
+
+.archived-badge {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+}
+
+/* Star count on package cards (github.stars) */
+.card-stars {
+  color: var(--text-secondary);
+}
+
 .modal-chart {
   margin-bottom: var(--space-lg);
 }

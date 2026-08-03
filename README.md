@@ -76,6 +76,8 @@ docker-compose up -d
 | `DB_PATH` | `./data/dashboard.db` | SQLite database path |
 | `SYNC_CRON` | `0 */4 * * *` | Cron schedule for the incremental sync (every 4h) |
 | `SYNC_FULL_CRON` | `0 3 * * *` | Cron schedule for the full sync (daily, 3 AM UTC) |
+| `GITHUB_TOKEN` | *(none)* | GitHub API token for repo metadata enrichment. Without it the sync is limited to 60 repo fetches/hour (unauth rate limit); with it you get 5,000/hour. |
+| `GH_REPO_BUDGET` | 60 | Max GitHub repo metadata fetches per sync run. Set `0` to disable enrichment entirely. |
 
 The Docker Compose file overrides `SYNC_CRON` to `0 * * * *` (hourly incremental).
 
@@ -86,6 +88,7 @@ pi-extension-dashboard/
 ├── backend/
 │   ├── index.ts      # Hono server + API routes (app factory)
 │   ├── sync.ts       # NPM data synchronization (incremental + full)
+│   ├── repoMeta.ts   # Budgeted GitHub repo metadata enrichment (stars/issues/license)
 │   ├── cron.ts       # Scheduled job management
 │   ├── db.ts         # SQLite setup + schema migrations
 │   ├── growth.ts     # Materialized per-package growth percentages
