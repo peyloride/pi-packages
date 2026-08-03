@@ -9,6 +9,8 @@ import { startCron, isSyncRunning, getNextRunTime, getLastSyncResult, getSyncVer
 import { computeAssetVersion, buildAssetCache } from './assets';
 import { compress } from './compress';
 import { getStatsCache, recomputeStatsCache } from './stats';
+import { recomputeEcosystemCache, getEcosystemCache, type EcosystemCache } from './ecosystem';
+import { resolvePublisher } from './publisher';
 import { recomputeGrowthCache, growthCacheExists } from './growth';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -60,32 +62,6 @@ function parsePeriod(raw: string | null | undefined): Period {
  */
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
-
-/**
- * Resolve a display name for the publisher field.
- *
- * npm records the trusted-publisher OIDC user as `"GitHub Actions"` for
- * packages published keyless from a GitHub Actions workflow. That's not a
- * human author, so fall back to the GitHub repo owner parsed from
- * `github_url` (e.g. `https://github.com/MattDevy/pi-extensions` -> `MattDevy`).
- *
- * Returns the chosen display name, or the raw publisher as a fallback.
- * The raw npm username is preserved separately as `publisher_raw`.
- */
-function resolvePublisher(publisher: string | null, githubUrl: string | null): { publisher: string | null; publisher_raw: string | null } {
-  const raw = publisher;
-  if (publisher && publisher !== 'GitHub Actions') {
-    return { publisher, publisher_raw: raw };
-  }
-  if (githubUrl) {
-    const cleaned = githubUrl.replace(/^git\+/, '').replace(/\.git$/, '');
-    const m = cleaned.match(/github\.com\/([^/]+)/i);
-    if (m && m[1] && m[1].toLowerCase() !== 'github') {
-      return { publisher: m[1], publisher_raw: raw };
-    }
-  }
-  return { publisher: publisher || null, publisher_raw: raw };
 }
 
 /**
@@ -596,6 +572,43 @@ export function createApp(): Hono {
     } catch (err) {
       console.error('[API] Error fetching stats:', err);
       return c.json({ error: 'Failed to fetch stats' }, 500);
+    }
+  });
+
+  /**
+   * GET /api/ecosystem - Aggregate ecosystem metrics
+   *
+   * Materialized at sync time (recomputeEcosystemCache from cron.ts) and
+   * read here with a cold-start fallback to live recompute — same pattern as
+   * /api/stats. Response-cached on the same syncVersion key so a sync that
+   * recomputes the blob invalidates the cache instantly.
+   */
+  app.get('/api/ecosystem', async (c) => {
+    try {
+      const key = responseCache.key(['ecosystem']);
+      const cached = responseCache.get(key);
+      if (cached) {
+        return new Response(cached.body, {
+          status: cached.status,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': API_CACHE_CONTROL,
+          },
+        });
+      }
+
+      let ecosystem = getEcosystemCache();
+      if (!ecosystem) {
+        ecosystem = recomputeEcosystemCache();
+      }
+
+      const serialized = JSON.stringify(ecosystem);
+      responseCache.set(key, serialized, 200);
+
+      return c.json(ecosystem, 200, { 'cache-control': API_CACHE_CONTROL });
+    } catch (err) {
+      console.error('[API] Error fetching ecosystem:', err);
+      return c.json({ error: 'Failed to fetch ecosystem' }, 500);
     }
   });
 

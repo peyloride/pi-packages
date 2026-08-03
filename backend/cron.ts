@@ -1,6 +1,7 @@
 import { runIncrementalSync, runFullSync } from './sync';
 import type { SyncResult } from './sync';
 import { recomputeStatsCache } from './stats';
+import { recomputeEcosystemCache } from './ecosystem';
 import { recomputeGrowthCache } from './growth';
 
 // Cron configuration:
@@ -156,6 +157,7 @@ export async function cronTick(now: Date): Promise<void> {
     try {
       lastSyncResult = await runFullSync();
       recomputeStatsCache();
+      recomputeEcosystemCache();
       recomputeGrowthCache();
       lastFullRun = currentRun;
       lastIncrementalRun = currentRun;
@@ -175,6 +177,7 @@ export async function cronTick(now: Date): Promise<void> {
     try {
       lastSyncResult = await runIncrementalSync();
       recomputeStatsCache();
+      recomputeEcosystemCache();
       recomputeGrowthCache();
       lastIncrementalRun = currentRun;
       syncVersion++;

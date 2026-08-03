@@ -260,3 +260,142 @@ export function truncate(str, maxLength = 100) {
   if (str.length <= maxLength) return str;
   return str.slice(0, maxLength - 3) + '...';
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// LINE / AREA CHART (SVG)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Pure path-builder + DOM-lite renderer for the ecosystem trend chart.
+// renderBars() (above) draws the per-package sparklines; this draws a
+// line/area series over time. Both are dependency-free and typed for the
+// {date, downloads} shape used by /api/ecosystem.downloads_series.
+//
+// Scaling: downloads are non-negative, so the y-axis baseline is always 0
+// (design D6 / design.md — the area fill anchors to the x-axis, never to
+// the data min, so a flat series still shows a visible 0-anchored area).
+
+/**
+ * Build an SVG path 'd' string for a series of download counts.
+ *
+ * Charts are laid out on a viewBox of width×height with `pad` inset on all
+ * sides. X is evenly spaced across the padded width; Y maps values on
+ * [0, max] to the padded height (value 0 sits on the bottom edge).
+ *
+ * @param {Array<{date: string, downloads: number}>} points - Series, oldest first
+ * @param {number} width - viewBox width
+ * @param {number} height - viewBox height
+ * @param {number} [pad=4] - Inset from the viewBox edges
+ * @returns {string} SVG path 'd', or '' for fewer than 2 points
+ */
+export function buildLinePath(points, width, height, pad = 4) {
+  if (!Array.isArray(points) || points.length < 2) return '';
+  const w = width > 0 ? width : 1;
+  const h = height > 0 ? height : 1;
+  const p = Math.min(Math.min(pad, w / 2), h / 2);
+  const innerW = Math.max(w - p * 2, 0.001);
+  const innerH = Math.max(h - p * 2, 0.001);
+
+  const values = points.map((pt) => Number(pt.downloads) || 0);
+  const max = Math.max(...values, 1); // floor at 1 so a flat 0 series draws
+
+  const step = points.length > 1 ? innerW / (points.length - 1) : 0;
+  const parts = values.map((v, i) => {
+    const x = p + i * step;
+    const y = p + innerH * (1 - v / max);
+    return `${i === 0 ? 'M' : 'L'}${round(x, 3)} ${round(y, 3)}`;
+  });
+  return parts.join(' ');
+}
+
+/**
+ * Build the area-fill path for a series: the line path closed down to the
+ * bottom edge (0-baseline) and back to the start.
+ *
+ * @param {string} linePath - Output of buildLinePath()
+ * @param {number} width - viewBox width (for the bottom-right corner)
+ * @param {number} height - viewBox height (for the bottom-left corner)
+ * @returns {string} Closed area path 'd', or '' for an empty line path
+ */
+export function buildAreaPath(linePath, width, height) {
+  if (!linePath) return '';
+  const bottomY = height - 0; // baseline is the viewBox bottom edge
+  return `${linePath} L${width} ${bottomY} L0 ${bottomY} Z`;
+}
+
+function round(n, digits = 3) {
+  const f = 10 ** digits;
+  return Math.round(n * f) / f;
+}
+
+/**
+ * Render a line/area chart into a container as an SVG element.
+ *
+ * @param {HTMLElement} container - Element to append the SVG into
+ * @param {Array<{date: string, downloads: number}>} points - Series, oldest first
+ * @param {Object} [options]
+ * @param {number} [options.width=600] - viewBox width
+ * @param {number} [options.height=160] - viewBox height
+ * @param {boolean} [options.area=true] - Draw the filled area under the line
+ * @param {boolean} [options.showLabels=true] - Draw sparse date x-axis labels
+ * @param {number} [options.labelEvery=10] - Label every Nth point
+ * @param {Function} [options.labelFn] - (point, index) => string for x labels
+ * @returns {SVGSVGElement} The appended SVG element
+ */
+export function renderLineArea(container, points, options = {}) {
+  const width = options.width || 600;
+  const height = options.height || 160;
+  const labels = options.showLabels !== false;
+  const labelEvery = options.labelEvery || 10;
+  const labelFn = options.labelFn || ((pt) => pt.date?.slice(5) || '');
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Daily total downloads over the last 60 days');
+  svg.classList.add('line-chart');
+
+  const linePath = buildLinePath(points, width, height);
+  if (!linePath) {
+    container.appendChild(svg);
+    return svg;
+  }
+
+  if (options.area !== false) {
+    const area = document.createElementNS(ns, 'path');
+    area.setAttribute('d', buildAreaPath(linePath, width, height));
+    area.classList.add('chart-area');
+    svg.appendChild(area);
+  }
+
+  const line = document.createElementNS(ns, 'path');
+  line.setAttribute('d', linePath);
+  line.classList.add('chart-line');
+  svg.appendChild(line);
+
+  // Sparse x-axis labels: every Nth point, positioned under its x coordinate.
+  if (labels) {
+    const every = Math.max(1, Math.floor(labelEvery));
+    points.forEach((pt, i) => {
+      if (i % every !== 0) return;
+      const values = points.map((p) => Number(p.downloads) || 0);
+      const max = Math.max(...values, 1);
+      const innerW = Math.max(width - 8, 0.001);
+      const step = points.length > 1 ? innerW / (points.length - 1) : 0;
+      const x = 4 + i * step;
+      const label = document.createElementNS(ns, 'text');
+      label.setAttribute('x', String(round(x, 2)));
+      label.setAttribute('y', String(height - 2));
+      label.setAttribute('text-anchor', i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle');
+      label.classList.add('chart-label');
+      const text = document.createTextNode(labelFn(pt, i));
+      label.appendChild(text);
+      svg.appendChild(label);
+    });
+  }
+
+  container.appendChild(svg);
+  return svg;
+}

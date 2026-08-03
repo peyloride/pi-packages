@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 // Import utilities from design system
-import { formatNumber, timeAgo, debounce, copyToClipboard } from './design-system/js/utils.js';
+import { formatNumber, timeAgo, debounce, copyToClipboard, renderLineArea } from './design-system/js/utils.js';
 import { PackageCard, renderPackageList } from './design-system/components/package-card.js';
 import { Pagination } from './design-system/components/pagination.js';
 import { LoadingState, EmptyState, ErrorState } from './design-system/components/state-components.js';
@@ -35,6 +35,29 @@ const searchInput = document.getElementById('search');
 const sortFilters = document.querySelectorAll('.sort-group .filter');
 const periodButtons = document.querySelectorAll('.period-group .period');
 const searchContainer = document.querySelector('.search');
+const statsTab = document.getElementById('stats-tab');
+const statsViewEl = document.getElementById('stats-view');
+
+// ── Route detection ───────────────────────────────────────────────────
+// The two "routes" are hash-based (design D5):
+//   - no hash / `#/packages`         → package list
+//   - `#/stats`                       → ecosystem stats view
+//   - `#/pkg/<name>`                  → package detail modal (over the list)
+// The stats tab is a nav-level toggle: entering `#/stats` hides the list and
+// shows the stats view; leaving restores the list.
+
+function isStatsRoute(hash = location.hash) {
+  return String(hash || '').trim() === '#/stats';
+}
+
+function applyRouteVisibility() {
+  const statsRoute = isStatsRoute();
+  const showList = !statsRoute;
+  if (packagesEl) packagesEl.hidden = showList ? false : true;
+  if (paginationEl) paginationEl.hidden = showList ? false : true;
+  if (statsViewEl) statsViewEl.hidden = statsRoute ? false : true;
+  if (statsTab) statsTab.classList.toggle('active', statsRoute);
+}
 
 // ── URL state sync ────────────────────────────────────────────────────
 // View state lives in the query string (?sort=&period=&search=&p=); the
@@ -139,12 +162,14 @@ function closeDetail() {
 
 document.addEventListener('DOMContentLoaded', () => {
   applyStateFromUrl();
+  applyRouteVisibility();
   loadPackages();
   loadStats();
   setupEventListeners();
   setupSearch();
   setupSortFilters();
   setupPeriodButtons();
+  setupStatsTab();
 
   // Deep-link: if the URL hash is #/pkg/<name>, open the modal after the
   // initial list render. Fetch + render runs async; opening the modal is
@@ -152,6 +177,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const pkgName = parsePackageHash(location.hash);
   if (pkgName) {
     openDetail(pkgName, 'replace');
+  }
+
+  // Stats route: load the ecosystem view on boot (and on any later route
+  // change via the stats tab).
+  if (isStatsRoute()) {
+    loadEcosystem();
   }
 });
 
@@ -242,7 +273,33 @@ function setupEventListeners() {
       closeDetail();
     }
 
+    // Stats route toggles the list/stats views on back/forward too.
+    const wasStats = isStatsRoute();
+    applyRouteVisibility();
+    if (wasStats) {
+      loadEcosystem();
+    }
+
     loadPackages(); // re-render list from the restored state
+  });
+}
+
+// Stats tab: push a history entry for #/stats; clicking again returns to
+// the list (Back also works via popstate).
+function setupStatsTab() {
+  if (!statsTab) return;
+  statsTab.addEventListener('click', () => {
+    if (isStatsRoute()) {
+      // Already on stats — go back to the list.
+      history.pushState({ view: 'list' }, '', location.pathname + location.search);
+      applyRouteVisibility();
+      loadPackages();
+      return;
+    }
+    const url = `${location.pathname}${location.search}#/stats`;
+    history.pushState({ view: 'stats' }, '', url);
+    applyRouteVisibility();
+    loadEcosystem();
   });
 }
 
@@ -412,3 +469,176 @@ function updateSyncStatus(stats) {
 // Refresh the sync indicator every 60s so "2m ago" doesn't go stale while the
 // page is open. /api/stats is cached server-side for 60s, so this is cheap.
 setInterval(loadStats, 60_000);
+
+// ── Ecosystem Stats view ──────────────────────────────────────────────
+// Renders /api/ecosystem: 60-day trend area chart, top publishers (by
+// package count and by 30-day downloads), top packages, and distribution
+// cards. Reuses the design-system state components for loading/empty/error.
+
+async function loadEcosystem() {
+  if (!statsViewEl) return;
+  statsViewEl.innerHTML = '';
+  statsViewEl.appendChild(LoadingState({ message: 'Loading ecosystem stats...' }));
+
+  try {
+    const response = await fetch('/api/ecosystem');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderEcosystem(data);
+  } catch (err) {
+    console.error('Failed to load ecosystem stats:', err);
+    statsViewEl.innerHTML = '';
+    statsViewEl.appendChild(ErrorState({
+      title: 'Failed to load ecosystem stats',
+      message: 'Could not reach the stats API. Check your connection and try again.',
+      onRetry: () => loadEcosystem(),
+    }));
+  }
+}
+
+function renderEcosystem(data) {
+  if (!statsViewEl) return;
+  statsViewEl.innerHTML = '';
+
+  const { downloads_series } = data;
+  const isEmpty = !downloads_series || downloads_series.length === 0;
+
+  if (isEmpty) {
+    statsViewEl.appendChild(EmptyState({
+      title: 'No ecosystem data yet',
+      message: 'Once syncs run, the ecosystem trend, publishers, and distribution will appear here.',
+    }));
+    return;
+  }
+
+  // --- Trend chart ---
+  const chartSection = document.createElement('section');
+  chartSection.className = 'stats-section';
+  const chartTitle = document.createElement('h2');
+  chartTitle.className = 'stats-section-title';
+  chartTitle.textContent = 'Ecosystem downloads — last 60 days';
+  const chartWrap = document.createElement('div');
+  chartWrap.className = 'stats-chart';
+  renderLineArea(chartWrap, downloads_series, { height: 180, labelEvery: 10 });
+  chartSection.appendChild(chartTitle);
+  chartSection.appendChild(chartWrap);
+  statsViewEl.appendChild(chartSection);
+
+  // --- Distribution cards ---
+  const dist = data.distribution || {};
+  const distSection = document.createElement('section');
+  distSection.className = 'stats-section';
+  const distTitle = document.createElement('h2');
+  distTitle.className = 'stats-section-title';
+  distTitle.textContent = 'Ecosystem snapshot';
+  distSection.appendChild(distTitle);
+
+  const distGrid = document.createElement('div');
+  distGrid.className = 'stats-grid';
+  distGrid.appendChild(statCard('Total packages', formatNumber(data.total_packages)));
+  distGrid.appendChild(statCard('Active packages (30d)', formatNumber(data.active_packages_30d)));
+  distGrid.appendChild(statCard('Median downloads (30d)', dist.p50 == null ? '—' : formatNumber(dist.p50)));
+  distGrid.appendChild(statCard('p90 downloads (30d)', dist.p90 == null ? '—' : formatNumber(dist.p90)));
+  distGrid.appendChild(statCard('p99 downloads (30d)', dist.p99 == null ? '—' : formatNumber(dist.p99)));
+  distGrid.appendChild(statCard('Median growth', dist.median_growth == null ? '—' : `${dist.median_growth > 0 ? '+' : ''}${dist.median_growth}%`));
+  distSection.appendChild(distGrid);
+  statsViewEl.appendChild(distSection);
+
+  // --- Top publishers (both rankings, side by side) ---
+  const pubsSection = document.createElement('section');
+  pubsSection.className = 'stats-section';
+  const pubsTitle = document.createElement('h2');
+  pubsTitle.className = 'stats-section-title';
+  pubsTitle.textContent = 'Top publishers';
+  pubsSection.appendChild(pubsTitle);
+
+  const pubsGrid = document.createElement('div');
+  pubsGrid.className = 'stats-grid stats-grid-2col';
+  pubsGrid.appendChild(publisherTable('By package count', data.top_publishers?.by_packages || []));
+  pubsGrid.appendChild(publisherTable('By 30-day downloads', data.top_publishers?.by_downloads || []));
+  pubsSection.appendChild(pubsGrid);
+  statsViewEl.appendChild(pubsSection);
+
+  // --- Top packages ---
+  const topSection = document.createElement('section');
+  topSection.className = 'stats-section';
+  const topTitle = document.createElement('h2');
+  topTitle.className = 'stats-section-title';
+  topTitle.textContent = 'Top packages — 30-day downloads';
+  topSection.appendChild(topTitle);
+
+  const topList = document.createElement('ol');
+  topList.className = 'top-list';
+  (data.top_packages || []).forEach((pkg) => {
+    const li = document.createElement('li');
+    li.className = 'top-list-item';
+    const name = document.createElement('span');
+    name.className = 'top-list-name';
+    name.textContent = pkg.name; // textContent — safe
+    const dl = document.createElement('span');
+    dl.className = 'top-list-downloads';
+    dl.textContent = formatNumber(pkg.downloads);
+    const growth = document.createElement('span');
+    growth.className = 'top-list-growth' + (pkg.growth != null && pkg.growth > 0 ? ' positive' : pkg.growth != null && pkg.growth < 0 ? ' negative' : '');
+    growth.textContent = pkg.growth == null ? '—' : `${pkg.growth > 0 ? '+' : ''}${pkg.growth}%`;
+    li.appendChild(name);
+    li.appendChild(dl);
+    li.appendChild(growth);
+    topList.appendChild(li);
+  });
+  topSection.appendChild(topList);
+  statsViewEl.appendChild(topSection);
+}
+
+function statCard(label, value) {
+  const card = document.createElement('div');
+  card.className = 'stat-card';
+  const val = document.createElement('div');
+  val.className = 'stat-card-value';
+  val.textContent = value;
+  const lbl = document.createElement('div');
+  lbl.className = 'stat-card-label';
+  lbl.textContent = label;
+  card.appendChild(val);
+  card.appendChild(lbl);
+  return card;
+}
+
+function publisherTable(title, entries) {
+  const wrap = document.createElement('div');
+  wrap.className = 'publisher-table';
+  const h = document.createElement('h3');
+  h.className = 'publisher-table-title';
+  h.textContent = title;
+  wrap.appendChild(h);
+
+  if (!entries.length) {
+    const p = document.createElement('p');
+    p.className = 'publisher-empty';
+    p.textContent = 'No publisher data';
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  const list = document.createElement('ol');
+  list.className = 'publisher-list';
+  entries.forEach((entry) => {
+    const li = document.createElement('li');
+    li.className = 'publisher-list-item';
+    const name = document.createElement('span');
+    name.className = 'publisher-list-name';
+    name.textContent = entry.publisher; // textContent — safe
+    const pkgs = document.createElement('span');
+    pkgs.className = 'publisher-list-packages';
+    pkgs.textContent = `${entry.packages} pkg${entry.packages === 1 ? '' : 's'}`;
+    const dl = document.createElement('span');
+    dl.className = 'publisher-list-downloads';
+    dl.textContent = formatNumber(entry.downloads);
+    li.appendChild(name);
+    li.appendChild(pkgs);
+    li.appendChild(dl);
+    list.appendChild(li);
+  });
+  wrap.appendChild(list);
+  return wrap;
+}

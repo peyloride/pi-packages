@@ -4,6 +4,7 @@ import { createApp } from './index';
 import { getDb } from './db';
 import { recomputeGrowthCache } from './growth';
 import { recomputeStatsCache } from './stats';
+import { recomputeEcosystemCache } from './ecosystem';
 
 // Each test creates a fresh app (isolated response cache) and seeds the DB
 // with identical data via getDb(). DB_PATH is ':memory:' in the test script,
@@ -43,6 +44,7 @@ describe('index.ts API Routes', () => {
     // Populate materialized growth + stats caches so the API reads them.
     recomputeGrowthCache();
     recomputeStatsCache();
+    recomputeEcosystemCache();
 
     app = createApp();
   });
@@ -406,6 +408,69 @@ describe('index.ts API Routes', () => {
 
     it('sets Cache-Control headers', async () => {
       const res = await app.request('/api/stats');
+      const cc = res.headers.get('cache-control');
+      assert.ok(cc?.includes('max-age=60'));
+    });
+  });
+
+  // ===========================================================================
+  // GET /api/ecosystem
+  // ===========================================================================
+
+  describe('GET /api/ecosystem', () => {
+    it('returns 200 with the full ecosystem shape', async () => {
+      const res = await app.request('/api/ecosystem');
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('content-type')?.includes('application/json'));
+      const body = (await res.json()) as any;
+      assert.equal(body.total_packages, 2);
+      assert.equal(body.active_packages_30d, 2);
+      assert.equal(body.downloads_series.length, 60);
+      assert.ok(Array.isArray(body.top_publishers.by_packages));
+      assert.ok(Array.isArray(body.top_publishers.by_downloads));
+      assert.ok(Array.isArray(body.top_packages));
+      assert.ok(body.distribution && 'p50' in body.distribution && 'p90' in body.distribution && 'p99' in body.distribution && 'median_growth' in body.distribution);
+      assert.equal(body.top_packages[0].name, 'pkg-a');
+    });
+
+    it('serves from the response cache on a second request', async () => {
+      const res1 = await app.request('/api/ecosystem');
+      const body1 = await res1.json();
+      const res2 = await app.request('/api/ecosystem');
+      const body2 = await res2.json();
+      assert.deepEqual(body2, body1);
+    });
+
+    it('falls back to live recompute when no ecosystem cache exists (cold start)', async () => {
+      db.prepare("DELETE FROM sync_meta WHERE key = 'ecosystem_cache'").run();
+      const res = await app.request('/api/ecosystem');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.total_packages, 2);
+      // The fallback should have re-persisted the cache.
+      const row = db.prepare("SELECT value FROM sync_meta WHERE key = 'ecosystem_cache'").get() as { value: string } | undefined;
+      assert.ok(row);
+    });
+
+    it('returns the same shape with empty values on an empty database', async () => {
+      db.prepare('DELETE FROM daily_downloads').run();
+      db.prepare('DELETE FROM packages').run();
+      db.prepare('DELETE FROM sync_meta').run();
+
+      const res = await app.request('/api/ecosystem');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.total_packages, 0);
+      assert.equal(body.downloads_series.length, 60);
+      assert.ok(body.downloads_series.every((d: any) => d.downloads === 0));
+      assert.deepEqual(body.top_publishers.by_packages, []);
+      assert.deepEqual(body.top_packages, []);
+      assert.equal(body.distribution.p50, null);
+      assert.equal(body.distribution.p99, null);
+    });
+
+    it('sets Cache-Control headers', async () => {
+      const res = await app.request('/api/ecosystem');
       const cc = res.headers.get('cache-control');
       assert.ok(cc?.includes('max-age=60'));
     });

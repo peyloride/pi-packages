@@ -52,11 +52,20 @@
         <button class="period active" data-period="weekly">Week</button>
         <button class="period" data-period="monthly">Month</button>
       </div>
+      <div class="filter-separator"></div>
+      <div class="filter-group">
+        <button class="filter" id="stats-tab" data-route="stats">
+          Stats
+        </button>
+      </div>
     </nav>
 
     <main class="content">
       <section class="packages" id="packages">
         <!-- Packages rendered by app.js -->
+      </section>
+      <section class="stats-view" id="stats-view" hidden>
+        <!-- Ecosystem stats rendered by app.js -->
       </section>
     </main>
 
