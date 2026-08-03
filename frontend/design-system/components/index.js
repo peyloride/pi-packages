@@ -12,3 +12,4 @@ export { Pagination } from './pagination.js';
 export { LoadingState } from './loading-state.js';
 export { EmptyState } from './empty-state.js';
 export { ErrorState } from './error-state.js';
+export { openPackageDetailModal } from './package-detail-modal.js';

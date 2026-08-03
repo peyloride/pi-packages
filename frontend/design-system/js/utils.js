@@ -190,6 +190,67 @@ export function sanitizeUrl(url) {
 }
 
 /**
+ * Render a dependency-free SVG bar chart into a container.
+ *
+ * Pure DOM builder (no layout math beyond simple scaling), designed for the
+ * package detail modal's daily download history. Each bar carries a `title`
+ * tooltip with the raw date + formatted value so hover/keyboard users get
+ * exact numbers; the max value scales bars to the container height.
+ *
+ * Data format: array of `{ date: string, downloads: number }` (date is a
+ * yyyy-mm-dd string). Emits nothing destructive — the container's previous
+ * contents are preserved. Returns the created <svg> element.
+ *
+ * @param {HTMLElement} container - Element to receive the SVG
+ * @param {Array<{date: string, downloads: number}>} data - Daily points
+ * @param {Object} [options]
+ * @param {number} [options.height=120] - Chart height in px
+ * @param {number} [options.barGap=1] - Gap between bars in px
+ * @returns {SVGSVGElement} The created SVG element (also appended to container)
+ */
+export function renderBars(container, data, options = {}) {
+  const height = options.height || 120;
+  const barGap = options.barGap !== undefined ? options.barGap : 1;
+  const values = (data || []).map(d => d.downloads || 0);
+  const max = values.length ? Math.max(...values) : 0;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('viewBox', `0 0 ${Math.max(values.length, 1)} ${height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Daily download count over the last 60 days');
+
+  const n = values.length;
+  if (n === 0) {
+    container.appendChild(svg);
+    return svg;
+  }
+
+  const slot = 1 / n;
+  for (let i = 0; i < n; i++) {
+    const v = values[i];
+    const barHeight = max > 0 ? Math.max(v / max, 0.01) : 0.01;
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', String(i * slot));
+    rect.setAttribute('y', String(height * (1 - barHeight)));
+    rect.setAttribute('width', String(Math.max(slot - barGap / 100, 0.02)));
+    rect.setAttribute('height', String(height * barHeight));
+    // Tooltip: yyyy-mm-dd + formatted count
+    const point = data[i];
+    const count = point.downloads === undefined || point.downloads === null ? 0 : point.downloads;
+    rect.setAttribute('title', `${point.date}: ${count.toLocaleString()} downloads`);
+    rect.classList.add('chart-bar');
+    svg.appendChild(rect);
+  }
+
+  container.appendChild(svg);
+  return svg;
+}
+
+/**
  * Truncate string to specified length
  * @param {string} str - String to truncate
  * @param {number} maxLength - Maximum length

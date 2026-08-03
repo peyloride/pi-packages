@@ -7,6 +7,8 @@ import { formatNumber, timeAgo, debounce, copyToClipboard } from './design-syste
 import { PackageCard, renderPackageList } from './design-system/components/package-card.js';
 import { Pagination } from './design-system/components/pagination.js';
 import { LoadingState, EmptyState, ErrorState } from './design-system/components/state-components.js';
+import { openPackageDetailModal } from './design-system/components/package-detail-modal.js';
+import { parseUrlState, buildUrlState, parsePackageHash, buildPackageHash } from './design-system/js/url-state.js';
 
 // Make utilities available globally for inline handlers
 window.formatNumber = formatNumber;
@@ -16,12 +18,13 @@ window.timeAgo = timeAgo;
 let currentSort = 'trending';
 let currentPeriod = 'weekly';
 let currentSearch = '';
-let currentOffset = 0;
+let currentOffset = 0; // derived: (page - 1) * limit
 const limit = 30;
 let totalCount = 0;
 
-// Components
+// Component instances
 let pagination;
+let detailModal = null;
 
 // DOM Elements
 const packagesEl = document.getElementById('packages');
@@ -33,37 +36,163 @@ const sortFilters = document.querySelectorAll('.sort-group .filter');
 const periodButtons = document.querySelectorAll('.period-group .period');
 const searchContainer = document.querySelector('.search');
 
-// Initialize
+// ── URL state sync ────────────────────────────────────────────────────
+// View state lives in the query string (?sort=&period=&search=&p=); the
+// package detail modal lives in the hash (#/pkg/<name>). See
+// design.md (D1-D3) and specs/url-state-sync for the exact contract.
+
+/**
+ * Read the current state from module variables.
+ * @returns {{sort: string, period: string, search: string, page: number}}
+ */
+function currentState() {
+  return {
+    sort: currentSort,
+    period: currentPeriod,
+    search: currentSearch,
+    page: Math.floor(currentOffset / limit) + 1,
+  };
+}
+
+/**
+ * Write current state to the URL query string.
+ * @param {'push'|'replace'} mode - push creates a history entry (explicit
+ *   actions: sort tab, page change); replace updates silently (search typing,
+ *   period toggle).
+ */
+function syncUrl(mode = 'replace') {
+  const qs = buildUrlState(currentState());
+  const url = qs ? `${location.pathname}?${qs}${location.hash}` : `${location.pathname}${location.hash}`;
+  if (mode === 'push') {
+    history.pushState({ view: 'list' }, '', url);
+  } else {
+    history.replaceState({ view: 'list' }, '', url);
+  }
+}
+
+/**
+ * Apply state from URL to module vars + active tab classes. Does NOT fetch.
+ */
+function applyStateFromUrl() {
+  const state = parseUrlState(location.search);
+  currentSort = state.sort;
+  currentPeriod = state.period;
+  currentSearch = state.search;
+  currentOffset = (state.page - 1) * limit;
+
+  // Sync active tab classes
+  sortFilters.forEach((f) => f.classList.toggle('active', f.dataset.sort === currentSort));
+  periodButtons.forEach((b) => b.classList.toggle('active', b.dataset.period === currentPeriod));
+  searchInput.value = currentSearch;
+  searchContainer.dataset.hasInput = currentSearch.length > 0 ? 'true' : 'false';
+}
+
+/**
+ * Open the package detail modal for a package name, syncing the hash.
+ * When a modal is already open, navigate it to the new package without
+ * pushing a new history entry (design D4: no modal-to-modal stack).
+ *
+ * @param {string} name - Package name
+ * @param {'push'|'replace'} hashMode - push for explicit card opens
+ */
+function openDetail(name, hashMode = 'push') {
+  if (detailModal) {
+    // Same package already open — no-op.
+    if (detailModal.packageName === name) return;
+    detailModal.close();
+    detailModal = null;
+  }
+
+  // Update hash (replaceState keeps the current list entry; pushState for the
+  // card click creates a new entry so Back closes the modal).
+  const target = `${location.pathname}${location.search}#/pkg/${encodeURIComponent(name)}`;
+  if (hashMode === 'push') {
+    history.pushState({ view: 'detail' }, '', target);
+  } else {
+    history.replaceState({ view: 'detail' }, '', target);
+  }
+
+  detailModal = openPackageDetailModal({
+    name,
+    onClose: () => {
+      detailModal = null;
+      // Clear hash without disturbing query params (replaceState).
+      const url = `${location.pathname}${location.search}`;
+      history.replaceState({ view: 'list' }, '', url);
+    },
+  });
+  detailModal.packageName = name;
+}
+
+/**
+ * Close the detail modal without touching the URL hash (used on popstate
+ * where the URL has already changed).
+ */
+function closeDetail() {
+  if (detailModal) {
+    detailModal.close();
+    detailModal = null;
+  }
+}
+
+// ── Initialize ───────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
+  applyStateFromUrl();
   loadPackages();
   loadStats();
   setupEventListeners();
   setupSearch();
   setupSortFilters();
   setupPeriodButtons();
+
+  // Deep-link: if the URL hash is #/pkg/<name>, open the modal after the
+  // initial list render. Fetch + render runs async; opening the modal is
+  // independent of the list, so this is safe to do here.
+  const pkgName = parsePackageHash(location.hash);
+  if (pkgName) {
+    openDetail(pkgName, 'replace');
+  }
 });
 
 function setupSearch() {
   let debounceTimer;
+  // Local mirror of the raw input value (~not-yet-trimmed) for URL sync.
+  let lastRaw = '';
+
   searchInput.addEventListener('input', (e) => {
     const value = e.target.value.trim();
     const hasInput = value.length > 0;
     searchContainer.dataset.hasInput = hasInput;
-    
+    lastRaw = e.target.value;
+
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       currentSearch = value;
       currentOffset = 0;
+      syncUrl('replace'); // debounced — replaceState, not pushState (D2)
       searchContainer.dataset.loading = 'true';
       loadPackages().finally(() => {
         searchContainer.dataset.loading = 'false';
       });
     }, 250);
   });
-  
-  // Keyboard shortcut: / to focus search
+
+  // Clear-search action from EmptyState
+  const clearSearch = () => {
+    searchInput.value = '';
+    lastRaw = '';
+    currentSearch = '';
+    currentOffset = 0;
+    searchContainer.dataset.hasInput = 'false';
+    syncUrl('replace');
+    loadPackages();
+  };
+  window.clearSearch = clearSearch;
+
+  // Keyboard shortcut: / to focus search (not while a modal button is focused)
   document.addEventListener('keydown', (e) => {
-    if (e.key === '/' && document.activeElement !== searchInput) {
+    if (e.key === '/' && document.activeElement !== searchInput && document.activeElement?.tagName !== 'BUTTON') {
       e.preventDefault();
       searchInput.focus();
     }
@@ -73,10 +202,12 @@ function setupSearch() {
 function setupSortFilters() {
   sortFilters.forEach(filter => {
     filter.addEventListener('click', () => {
+      if (filter.dataset.sort === currentSort) return;
       sortFilters.forEach(f => f.classList.remove('active'));
       filter.classList.add('active');
       currentSort = filter.dataset.sort;
       currentOffset = 0;
+      syncUrl('push'); // explicit action — push (D2)
       loadPackages();
     });
   });
@@ -85,17 +216,34 @@ function setupSortFilters() {
 function setupPeriodButtons() {
   periodButtons.forEach(btn => {
     btn.addEventListener('click', () => {
+      if (btn.dataset.period === currentPeriod) return;
       periodButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentPeriod = btn.dataset.period;
       currentOffset = 0;
+      syncUrl('replace'); // transient toggle — replace (D2)
       loadPackages();
     });
   });
 }
 
+// Back/forward: re-parse the URL and re-render (no reload).
 function setupEventListeners() {
   window.retryLoad = () => loadPackages();
+
+  window.addEventListener('popstate', () => {
+    applyStateFromUrl();
+
+    const pkgName = parsePackageHash(location.hash);
+    if (pkgName) {
+      // Navigate the existing modal (or open it) without pushing again.
+      openDetail(pkgName, 'replace');
+    } else {
+      closeDetail();
+    }
+
+    loadPackages(); // re-render list from the restored state
+  });
 }
 
 // Load packages from API
@@ -144,11 +292,8 @@ async function loadPackages() {
         action: hasSearch ? {
           label: 'Clear search',
           onClick: () => {
-            searchInput.value = '';
-            currentSearch = '';
-            currentOffset = 0;
-            searchContainer.dataset.hasInput = 'false';
-            loadPackages();
+            if (typeof window.clearSearch === 'function') window.clearSearch();
+            else loadPackages();
           }
         } : null
       }));
@@ -177,6 +322,16 @@ async function loadPackages() {
 function renderPackages(packages) {
   packagesEl.innerHTML = '';
   packagesEl.appendChild(renderPackageList(packages, {
+    onNameClick: (pkg, event) => {
+      // Only the name link opens the modal; modifier-clicks (cmd/ctrl) and
+      // right-clicks fall through to the default link behavior. GitHub/npm
+      // links keep their real hrefs (D6).
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      openDetail(pkg.name);
+    },
     onCopy: (cmd) => {
       console.log('Copied:', cmd);
     }
@@ -195,6 +350,7 @@ function renderPagination() {
     current: Math.floor(currentOffset / limit) + 1,
     onChange: (page) => {
       currentOffset = (page - 1) * limit;
+      syncUrl('push'); // explicit page change — push (D2)
       loadPackages();
     }
   });
