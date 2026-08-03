@@ -31,7 +31,7 @@ The system SHALL run a budgeted GitHub enrichment step during each sync: at most
 - **THEN** no GitHub API calls are made and no error is raised
 
 ### Requirement: The system SHALL expose GitHub metadata via the API
-`GET /api/packages` list rows and `GET /api/packages/:name` SHOULD each include a `github` field: `{stars, forks, open_issues, license, archived, pushed_at} | null` (null when no metadata exists for the repo).
+`GET /api/packages` list rows and `GET /api/packages/:name` SHALL each include a `github` field: `{stars, forks, open_issues, license, archived, pushed_at} | null` (null when no metadata exists for the repo).
 
 #### Scenario: Metadata present
 - **WHEN** a package has a `github_url` and a `repo_meta` row exists for it
