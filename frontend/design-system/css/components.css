@@ -240,6 +240,35 @@
   flex-shrink: 0;
 }
 
+/* Freshness badges (NEW pill + stale chip) — text-based, not color-only. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-ui);
+  font-size: 0.625rem;
+  font-weight: var(--font-bold);
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-full);
+  padding: 3px 7px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.badge-new {
+  color: var(--bg-deep);
+  background: var(--accent-bright);
+}
+
+.meta-item.updated-at.stale {
+  color: var(--text-tertiary);
+}
+
+.meta-item.updated-at.stale::before {
+  background: var(--warning);
+}
+
 .package-stats {
   display: flex;
   align-items: baseline;

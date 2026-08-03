@@ -1,4 +1,5 @@
 import { formatNumber, timeAgo, copyToClipboard, escapeHtml, sanitizeUrl } from '../js/utils.js';
+import { getFreshness, formatStaleLabel } from '../js/freshness.js';
 
 /**
  * PackageCard Component
@@ -32,6 +33,11 @@ export class PackageCard {
       // `npm:pkg` (not `npm: pkg`), `git:git@github.com:...` (not `git: git@...`).
       installPrefix: options.installPrefix || 'pi install',
       installSourceType: options.installSourceType || 'npm',
+      // Freshness badges: NEW pill for recently first-seen packages, muted
+      // stale chip for packages not updated in a while. Defaults on; pass
+      // `showNewBadge: false` / `staleThresholdDays: N` to customize.
+      showNewBadge: options.showNewBadge !== false,
+      staleThresholdDays: options.staleThresholdDays !== undefined ? options.staleThresholdDays : 30,
       ...options
     };
 
@@ -80,7 +86,11 @@ export class PackageCard {
     // Build meta HTML
     const metaItems = [];
     if (data.last_publish) {
-      metaItems.push(`<span class="meta-item updated-at">${timeAgo(data.last_publish)}</span>`);
+      if (isStale) {
+        metaItems.push(`<span class="meta-item updated-at stale" title="Last published ${escapeHtml(timeAgo(data.last_publish))}">${escapeHtml(formatStaleLabel(data.last_publish, timeAgo))}</span>`);
+      } else {
+        metaItems.push(`<span class="meta-item updated-at">${timeAgo(data.last_publish)}</span>`);
+      }
     }
     if (data.publisher) {
       metaItems.push(`<span class="meta-item author">${safePublisher}</span>`);
@@ -94,6 +104,21 @@ export class PackageCard {
       ? `<span class="package-version">v${safeVersion}</span>`
       : '';
 
+    // Freshness (pure classification, see js/freshness.js). NEW badge shows
+    // for packages first seen within NEW_DAYS (inclusive); the stale chip
+    // replaces the plain updated label for packages not published in
+    // staleThresholdDays+ days. Badge labels are static trusted strings.
+    const { isNew, isStale, updatedLabel } = getFreshness(
+      Date.now(),
+      data.first_seen,
+      data.last_publish,
+      timeAgo,
+      { staleDays: options.staleThresholdDays },
+    );
+    const newBadgeHtml = options.showNewBadge && isNew
+      ? `<span class="badge badge-new">NEW</span>`
+      : '';
+
     // Build install command: `pi install <sourceType>:<spec>` with no space
     // between the colon and the spec. The displayed command is HTML-escaped;
     // the copy button reads `.textContent`, which decodes back to the raw
@@ -105,6 +130,7 @@ export class PackageCard {
       <div class="package-head">
         <div class="package-title">
           <a class="package-name" href="${profileHref}" target="_blank" rel="noopener">${safeName}</a>
+          ${newBadgeHtml}
           ${versionHtml}
         </div>
         <div class="package-stats">
