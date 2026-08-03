@@ -57,6 +57,18 @@ input, textarea, select {
    UTILITIES
    ────────────────────────────────────────────────────────────────── */
 
+[hidden] {
+  /*
+   * The `hidden` attribute sets `display: none` only as a UA default — any
+   * CSS rule that sets `display` on the element (e.g. `.stats-view {
+   * display: flex; }`) silently overrides it, so hidden elements keep
+   * rendering (the Stats view appearing below the package list). This
+   * global rule makes the attribute the source of truth for visibility,
+   * matching HTML semantics regardless of component styles.
+   */
+  display: none !important;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
