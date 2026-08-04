@@ -230,6 +230,63 @@ describe('sync.ts', () => {
 
       assert.equal(pkg.github_url, 'https://github.com/test/repo');
     });
+
+    it('should set publisher_display to the raw username for non-Actions publishers', () => {
+      upsertPackage({
+        package: {
+          name: 'display-pkg',
+          version: '1.0.0',
+          publisher: { username: 'artale' },
+          links: {
+            npm: 'https://npmjs.com/display-pkg',
+            repository: 'https://github.com/artale/display-pkg'
+          }
+        }
+      });
+
+      const db = getDb();
+      const pkg = db.prepare('SELECT publisher, publisher_display FROM packages WHERE name = ?').get('display-pkg') as { publisher: string; publisher_display: string };
+
+      assert.equal(pkg.publisher, 'artale');
+      assert.equal(pkg.publisher_display, 'artale');
+    });
+
+    it('should resolve publisher_display to the GitHub owner for “GitHub Actions” publishers', () => {
+      upsertPackage({
+        package: {
+          name: 'actions-pkg',
+          version: '1.0.0',
+          publisher: { username: 'GitHub Actions' },
+          links: {
+            npm: 'https://npmjs.com/actions-pkg',
+            repository: 'https://github.com/MattDevy/pi-extensions'
+          }
+        }
+      });
+
+      const db = getDb();
+      const pkg = db.prepare('SELECT publisher, publisher_display FROM packages WHERE name = ?').get('actions-pkg') as { publisher: string; publisher_display: string };
+
+      assert.equal(pkg.publisher, 'GitHub Actions');
+      assert.equal(pkg.publisher_display, 'MattDevy');
+    });
+
+    it('should store null publisher_display when no publisher and no repo', () => {
+      upsertPackage({
+        package: {
+          name: 'anon-pkg',
+          version: '1.0.0',
+          links: { npm: 'https://npmjs.com/anon-pkg' }
+        }
+      });
+
+      const db = getDb();
+      const pkg = db.prepare('SELECT publisher, publisher_display, github_url FROM packages WHERE name = ?').get('anon-pkg') as { publisher: string | null; publisher_display: string | null; github_url: string | null };
+
+      assert.equal(pkg.publisher, null);
+      assert.equal(pkg.github_url, null);
+      assert.equal(pkg.publisher_display, null);
+    });
   });
 
   describe('upsertDownloads', () => {

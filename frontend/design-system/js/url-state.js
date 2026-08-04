@@ -18,6 +18,8 @@ export const DEFAULT_SORT = 'trending';
 export const DEFAULT_PERIOD = 'weekly';
 export const DEFAULT_SEARCH = '';
 export const DEFAULT_PAGE = 1;
+export const DEFAULT_PUBLISHER = '';
+export const DEFAULT_MIN_DOWNLOADS = 0;
 
 /**
  * Normalize a raw sort value to a valid sort, or the default.
@@ -53,29 +55,61 @@ export function normalizePage(raw) {
 }
 
 /**
+ * Normalize a raw publisher filter value.
+ * Empty/whitespace → '' (no filter). Kept as-is otherwise (exact match,
+ * case-insensitive server-side).
+ * @param {string|null|undefined} raw
+ * @returns {string}
+ */
+export function normalizePublisher(raw) {
+  if (typeof raw !== 'string') return DEFAULT_PUBLISHER;
+  return raw.trim();
+}
+
+/**
+ * Normalize a raw min_downloads value to a non-negative integer, or 0 when
+ * absent/invalid (0 = no filter). Negative/fractional/non-numeric → 0.
+ * @param {string|null|undefined} raw
+ * @returns {number}
+ */
+export function normalizeMinDownloads(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return DEFAULT_MIN_DOWNLOADS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MIN_DOWNLOADS;
+  return Math.floor(n);
+}
+
+/**
  * Parse a query string (e.g. location.search) into validated view state.
  * Invalid or missing params fall back to defaults without erroring.
  *
  * @param {string|URLSearchParams} query - Query string ("?sort=...") or params
- * @returns {{sort: string, period: string, search: string, page: number}}
+ * @returns {{sort: string, period: string, search: string, page: number, publisher?: string, min_downloads?: number}}
  */
 export function parseUrlState(query = '') {
   const params = query instanceof URLSearchParams
     ? query
     : new URLSearchParams((query || '').replace(/^\?/, ''));
-  return {
+  const publisher = normalizePublisher(params.get('publisher'));
+  const minDownloads = normalizeMinDownloads(params.get('min_downloads'));
+  const state = {
     sort: normalizeSort(params.get('sort')),
     period: normalizePeriod(params.get('period')),
     search: (params.get('search') || '').trim(),
     page: normalizePage(params.get('p')),
   };
+  // Only include filter keys when actually active, so callers can distinguish
+  // "no filter" from "filter = default".
+  if (publisher) state.publisher = publisher;
+  if (minDownloads > 0) state.min_downloads = minDownloads;
+  return state;
 }
 
 /**
  * Build a query string (without leading "?") from view state.
  * Default values are omitted so the URL stays minimal.
  *
- * @param {Partial<{sort: string, period: string, search: string, page: number}>} state
+ * @param {Partial<{sort: string, period: string, search: string, page: number, publisher?: string, min_downloads?: number}>} state
  * @returns {string} e.g. "sort=popular&period=daily&search=agent&p=2"
  */
 export function buildUrlState(state = {}) {
@@ -91,6 +125,13 @@ export function buildUrlState(state = {}) {
   if (normalized.period !== DEFAULT_PERIOD) params.set('period', normalized.period);
   if (normalized.search) params.set('search', normalized.search);
   if (normalized.page !== DEFAULT_PAGE) params.set('p', String(normalized.page));
+
+  const publisher = normalizePublisher(state.publisher);
+  if (publisher) params.set('publisher', publisher);
+
+  const minDownloads = normalizeMinDownloads(state.min_downloads === undefined || state.min_downloads === null ? undefined : String(state.min_downloads));
+  if (minDownloads > 0) params.set('min_downloads', String(minDownloads));
+
   return params.toString();
 }
 

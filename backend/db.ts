@@ -68,6 +68,11 @@ export function initializeSchema(database: DatabaseSync): void {
   // time (see sync.ts upsertPackage). Enables a plain equality LEFT JOIN
   // against repo_meta.repo in the API — SQLite can't reliably parse URLs.
   addColumnIfMissing(database, 'packages', 'github_repo', 'TEXT');
+  // Materialized resolved publisher display name (see publisher.ts
+  // resolvePublisher): "GitHub Actions" resolves to the GitHub repo owner.
+  // Populated at sync time so /api/packages?publisher= filters with a plain
+  // equality match that is consistent with what cards display.
+  addColumnIfMissing(database, 'packages', 'publisher_display', 'TEXT');
 }
 
 /**

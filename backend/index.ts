@@ -234,13 +234,21 @@ export function createApp(): Hono {
       const sort = c.req.query('sort') || 'popular';
       const period = parsePeriod(c.req.query('period'));
       const search = c.req.query('search') || '';
+      // Publisher filter: exact match on the materialized publisher_display
+      // column (set at sync time by resolvePublisher — "GitHub Actions" →
+      // repo owner), case-insensitive. Empty/missing = no filter.
+      const publisher = (c.req.query('publisher') || '').trim();
+      // Minimum 30-day download floor (cohort filter from the stats view's
+      // p90/p99/active cards). Non-numeric/negative → 0 (no filter).
+      const rawMin = parseInt(c.req.query('min_downloads') || '', 10);
+      const minDownloads = Number.isFinite(rawMin) && rawMin > 0 ? rawMin : 0;
       // Clamp to a sane range. parseInt can yield NaN (non-numeric input) or
       // negatives, and SQLite treats a negative LIMIT as "no bound" (returns
       // every row), so an unclamped `?limit=-1` would bypass the 100-row cap.
       const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10) || 50, 1), 100);
       const offset = Math.max(parseInt(c.req.query('offset') || '0', 10) || 0, 0);
 
-      const key = responseCache.key(['packages', sort, period, search, String(limit), String(offset)]);
+      const key = responseCache.key(['packages', sort, period, search, publisher, String(minDownloads), String(limit), String(offset)]);
       const cached = responseCache.get(key);
       if (cached) {
         return new Response(cached.body, {
@@ -264,9 +272,22 @@ export function createApp(): Hono {
       const searchCondition = search
         ? `AND (p.name LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\')`
         : '';
-      const searchParams: string[] = search
+      // The same array binds the count query and the main query (search
+      // placeholders precede LIMIT/OFFSET in the SQL). Numbers stay numbers:
+      // SQLite type-ordering compares TEXT binds after all numeric values, so
+      // a string '500' bound to an INTEGER-affinity comparison never matches.
+      const searchParams: Array<string | number> = search
         ? [`%${escapeLike(search)}%`, `%${escapeLike(search)}%`]
         : [];
+
+      // Publisher filter: exact (case-insensitive) match on the materialized
+      // publisher_display column. Bind order matters — appended after the
+      // search placeholders so the count + main queries bind consistently
+      // (search placeholders, then publisher, then LIMIT/OFFSET).
+      const publisherCondition = publisher
+        ? `AND p.publisher_display = ? COLLATE NOCASE`
+        : '';
+      if (publisher) searchParams.push(publisher);
 
       // Build sort order and extra filter
       let orderBy = '';
@@ -294,13 +315,31 @@ export function createApp(): Hono {
           break;
       }
 
-      const wherePart = `1=1 ${searchCondition} ${extraFilter}`;
+      // Minimum 30-day download floor (cohort filter). Mirrors the trending
+      // floor pattern so the count query stays consistent with the main query.
+      // Composes with the trending HAVING by AND-ing onto it; when there is no
+      // existing HAVING (non-trending sorts) it seeds the keyword itself.
+      if (minDownloads > 0) {
+        const floor = `COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) >= ?`;
+        havingPart = havingPart ? `${havingPart} AND ${floor}` : `HAVING ${floor}`;
+        // Bind as a NUMBER (not string): SQLite compares INTEGER affinity
+        // results against TEXT binds with type-ordering rules that sort all
+        // TEXT after all numbers, so a string '500' would never match a
+        // numeric sum (see debug: get('500') → 0, get(500) → 1).
+        searchParams.push(minDownloads);
+      }
 
-      // Get total count. Trending needs the volume floor applied to the count
-      // too, otherwise pagination total would over-report (and pages beyond the
-      // floor would return empty).
+      const wherePart = `1=1 ${searchCondition} ${extraFilter} ${publisherCondition}`;
+
+      // Get total count. The grouped subquery form is required whenever the
+      // HAVING clause references per-group download aggregates — i.e. the
+      // trending volume floor OR the min_downloads cohort floor — otherwise
+      // the count query (no join) would error on d.date/d.downloads. Trending
+      // without min_downloads therefore also uses the grouped form (existing
+      // behavior), and pagination.total stays consistent with the main query.
+      const needsGroupedCount = sort === 'trending' || minDownloads > 0;
       let countQuery: string;
-      if (sort === 'trending') {
+      if (needsGroupedCount) {
         countQuery = `
           SELECT COUNT(*) as total FROM (
             SELECT p.name

@@ -8,6 +8,8 @@ import {
   normalizeSort,
   normalizePeriod,
   normalizePage,
+  normalizePublisher,
+  normalizeMinDownloads,
 } from './url-state.js';
 
 describe('parseUrlState', () => {
@@ -16,6 +18,30 @@ describe('parseUrlState', () => {
       parseUrlState('?sort=popular&period=daily&search=agent&p=2'),
       { sort: 'popular', period: 'daily', search: 'agent', page: 2 },
     );
+  });
+
+  it('parses publisher and min_downloads when present', () => {
+    assert.deepEqual(
+      parseUrlState('?sort=popular&publisher=artale&min_downloads=1234'),
+      { sort: 'popular', period: 'weekly', search: '', page: 1, publisher: 'artale', min_downloads: 1234 },
+    );
+  });
+
+  it('omits publisher/min_downloads keys when absent or default', () => {
+    const s = parseUrlState('?sort=popular');
+    assert.equal('publisher' in s, false);
+    assert.equal('min_downloads' in s, false);
+  });
+
+  it('normalizes invalid min_downloads to omitted (non-numeric/negative/zero)', () => {
+    for (const bad of ['abc', '-5', '0', '1.5abc']) {
+      const s = parseUrlState(`?min_downloads=${bad}`);
+      assert.equal('min_downloads' in s, false, `min_downloads=${bad} should be omitted`);
+    }
+  });
+
+  it('trims publisher whitespace', () => {
+    assert.equal(parseUrlState('?publisher=%20%20artale%20').publisher, 'artale');
   });
 
   it('accepts a URLSearchParams instance', () => {
@@ -65,6 +91,26 @@ describe('buildUrlState', () => {
     assert.deepEqual(parseUrlState(`?${q}`), { sort: 'popular', period: 'daily', search: 'agent', page: 2 });
   });
 
+  it('round-trips publisher + min_downloads', () => {
+    const q = buildUrlState({ sort: 'popular', publisher: 'Artale', min_downloads: 500 });
+    assert.equal(q, 'sort=popular&publisher=Artale&min_downloads=500');
+    assert.deepEqual(parseUrlState(`?${q}`), {
+      sort: 'popular', period: 'weekly', search: '', page: 1,
+      publisher: 'Artale', min_downloads: 500,
+    });
+  });
+
+  it('omits publisher/min_downloads when undefined/empty/zero', () => {
+    const q = buildUrlState({ publisher: '', min_downloads: 0 });
+    assert.ok(!q.includes('publisher'));
+    assert.ok(!q.includes('min_downloads'));
+  });
+
+  it('normalizes fractional min_downloads down', () => {
+    const q = buildUrlState({ min_downloads: 12.9 });
+    assert.ok(q.includes('min_downloads=12'));
+  });
+
   it('omits default values from the URL', () => {
     assert.equal(buildUrlState({}), '');
     assert.equal(buildUrlState({ sort: 'trending', period: 'weekly', page: 1 }), '');
@@ -100,6 +146,25 @@ describe('normalizeSort / normalizePeriod / normalizePage', () => {
     assert.equal(normalizePage('0'), 1);
     assert.equal(normalizePage('-1'), 1);
     assert.equal(normalizePage('1.7'), 1);
+  });
+
+  it('normalizePublisher trims and keeps valid strings, empty for junk', () => {
+    assert.equal(normalizePublisher('artale'), 'artale');
+    assert.equal(normalizePublisher('  artale  '), 'artale');
+    assert.equal(normalizePublisher(''), '');
+    assert.equal(normalizePublisher('   '), '');
+    assert.equal(normalizePublisher(null), '');
+    assert.equal(normalizePublisher(undefined), '');
+  });
+
+  it('normalizeMinDownloads accepts positive ints, rejects junk', () => {
+    assert.equal(normalizeMinDownloads('500'), 500);
+    assert.equal(normalizeMinDownloads('1.5'), 1);
+    assert.equal(normalizeMinDownloads('0'), 0);
+    assert.equal(normalizeMinDownloads('-3'), 0);
+    assert.equal(normalizeMinDownloads('abc'), 0);
+    assert.equal(normalizeMinDownloads(''), 0);
+    assert.equal(normalizeMinDownloads(null), 0);
   });
 });
 

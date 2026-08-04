@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { resolvePublisher } from './publisher';
 import { fileURLToPath } from 'node:url';
 
 const NPM_SEARCH_URL = 'https://registry.npmjs.org/-/v1/search';
@@ -457,9 +458,17 @@ export function upsertPackage(pkg: NpmSearchResult): void {
     githubUrl = githubUrl.replace(/^git\+/, '').replace(/\.git$/, '');
   }
 
+  // Resolved publisher display name (npm's "GitHub Actions" OIDC user maps to
+  // the repo owner). Materialized here so the API can filter by the exact
+  // display name users see on cards (design D1).
+  const publisherDisplay = resolvePublisher(
+    pkg.package.publisher?.username || null,
+    githubUrl,
+  ).publisher;
+
   const stmt = db.prepare(`
-    INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, github_repo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, github_repo, publisher_display)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       description = excluded.description,
       version = excluded.version,
@@ -467,6 +476,7 @@ export function upsertPackage(pkg: NpmSearchResult): void {
       publisher = excluded.publisher,
       github_url = excluded.github_url,
       github_repo = excluded.github_repo,
+      publisher_display = excluded.publisher_display,
       last_publish = excluded.last_publish
   `);
 
@@ -481,6 +491,7 @@ export function upsertPackage(pkg: NpmSearchResult): void {
     pkg.package.date || now,
     pkg.updated || null,
     normalizeGithubRepo(githubUrl),
+    publisherDisplay,
   );
 }
 

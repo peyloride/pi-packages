@@ -21,10 +21,10 @@ describe('index.ts API Routes', () => {
     db.prepare('DELETE FROM sync_meta').run();
 
     // Seed: 2 packages, 14 days of downloads. pkg-a growing, pkg-b stable.
-    db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run('pkg-a', 'Package A description', '1.0.0', '["test","pi"]', 'testuser', 'https://github.com/test/pkg-a', 'https://npmjs.com/package/pkg-a', '2024-01-01', '2024-01-15');
-    db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run('pkg-b', 'Package B', '2.0.0', '[]', 'GitHub Actions', 'https://github.com/maintainer/pkg-b', 'https://npmjs.com/package/pkg-b', '2024-06-01', '2024-06-15');
+    db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, publisher_display) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('pkg-a', 'Package A description', '1.0.0', '["test","pi"]', 'testuser', 'https://github.com/test/pkg-a', 'https://npmjs.com/package/pkg-a', '2024-01-01', '2024-01-15', 'testuser');
+    db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, publisher_display) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('pkg-b', 'Package B', '2.0.0', '[]', 'GitHub Actions', 'https://github.com/maintainer/pkg-b', 'https://npmjs.com/package/pkg-b', '2024-06-01', '2024-06-15', 'maintainer');
 
     // Seed GitHub repo metadata for pkg-a; leave pkg-b without any (to test
     // the null contract). github_repo mirrors what sync would write.
@@ -207,6 +207,120 @@ describe('index.ts API Routes', () => {
       assert.equal(res.status, 200);
       const body = (await res.json()) as any;
       assert.equal(body.packages.length, 0);
+    });
+
+    it('filters packages by exact publisher (resolved display name)', async () => {
+      const res = await app.request('/api/packages?publisher=testuser');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-a');
+      assert.equal(body.pagination.total, 1);
+    });
+
+    it('filters “GitHub Actions” packages by the resolved repo-owner publisher', async () => {
+      // pkg-b's raw publisher is "GitHub Actions", display name is "maintainer"
+      // (parsed from https://github.com/maintainer/pkg-b).
+      const res = await app.request('/api/packages?publisher=maintainer');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-b');
+      assert.equal(body.packages[0].publisher, 'maintainer');
+      assert.equal(body.pagination.total, 1);
+    });
+
+    it('matches publisher case-insensitively (COLLATE NOCASE)', async () => {
+      const res = await app.request('/api/packages?publisher=TESTUSER');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-a');
+    });
+
+    it('returns empty results for a publisher with no packages (200, total 0)', async () => {
+      const res = await app.request('/api/packages?publisher=nonexistent-person');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 0);
+      assert.equal(body.pagination.total, 0);
+    });
+
+    it('composes publisher filter with search + sort', async () => {
+      // pkg-a description "Package A description" contains "Package A".
+      const res = await app.request('/api/packages?publisher=testuser&search=Package%20A&sort=popular');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-a');
+    });
+
+    it('filters by minimum 30-day downloads (cohort floor)', async () => {
+      // pkg-a: 7×100 + 7×50 = 1050 in 30d; pkg-b: 14×10 = 140 in 30d.
+      const res = await app.request('/api/packages?min_downloads=500');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-a');
+      assert.equal(body.pagination.total, 1);
+    });
+
+    it('reflects min_downloads in pagination.total (grouped count)', async () => {
+      // pkg-a 1050, pkg-b 140 in 30d → floor of 200 keeps only pkg-a.
+      const res = await app.request('/api/packages?min_downloads=200');
+      const body = (await res.json()) as any;
+      assert.equal(body.pagination.total, 1);
+      assert.equal(body.packages[0].name, 'pkg-a');
+    });
+
+    it('composes min_downloads with publisher filter', async () => {
+      // maintainer (pkg-b) has only 140 in 30d — below a 500 floor.
+      const res = await app.request('/api/packages?publisher=maintainer&min_downloads=500');
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 0);
+      assert.equal(body.pagination.total, 0);
+
+      const res2 = await app.request('/api/packages?publisher=maintainer&min_downloads=100');
+      const body2 = (await res2.json()) as any;
+      assert.equal(body2.packages.length, 1);
+      assert.equal(body2.packages[0].name, 'pkg-b');
+    });
+
+    it('ignores invalid min_downloads (non-numeric/negative) — no filter', async () => {
+      for (const bad of ['abc', '-5', '1.5abc']) {
+        const res = await app.request(`/api/packages?min_downloads=${bad}`);
+        assert.equal(res.status, 200);
+        const body = (await res.json()) as any;
+        // Both packages returned → filter not applied.
+        assert.ok(body.packages.length >= 2 || body.pagination.total >= 2, `min_downloads=${bad} should not filter`);
+      }
+    });
+
+    it('composes min_downloads with trending sort (two HAVING clauses)', async () => {
+      const res = await app.request('/api/packages?sort=trending&period=weekly&min_downloads=500');
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      // Trending floor (weekly >= 50) + 30d >= 500: pkg-a qualifies, pkg-b not.
+      assert.ok(body.packages.some((p: any) => p.name === 'pkg-a'));
+      assert.ok(!body.packages.some((p: any) => p.name === 'pkg-b'));
+    });
+
+    it('treats publisher like other params in the response-cache key (variant isolation)', async () => {
+      // Different publisher values must not share a cached entry.
+      const r1 = await app.request('/api/packages?publisher=testuser');
+      const b1 = (await r1.json()) as any;
+      const r2 = await app.request('/api/packages?publisher=maintainer');
+      const b2 = (await r2.json()) as any;
+      assert.equal(b1.packages.length, 1);
+      assert.equal(b1.packages[0].name, 'pkg-a');
+      assert.equal(b2.packages.length, 1);
+      assert.equal(b2.packages[0].name, 'pkg-b');
+
+      // min_downloads also keys the cache distinctly.
+      const r3 = await app.request('/api/packages?min_downloads=500');
+      const b3 = (await r3.json()) as any;
+      assert.equal(b3.packages.length, 1);
+      assert.equal(b3.packages[0].name, 'pkg-a');
     });
 
     it('applies limit + offset pagination and reports hasMore', async () => {

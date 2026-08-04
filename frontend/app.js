@@ -18,6 +18,8 @@ window.timeAgo = timeAgo;
 let currentSort = 'trending';
 let currentPeriod = 'weekly';
 let currentSearch = '';
+let currentPublisher = ''; // exact resolved-publisher filter (stats → list)
+let currentMinDownloads = 0; // 30-day download floor (stats p90/p99 cohort)
 let currentOffset = 0; // derived: (page - 1) * limit
 const limit = 30;
 let totalCount = 0;
@@ -69,12 +71,15 @@ function applyRouteVisibility() {
  * @returns {{sort: string, period: string, search: string, page: number}}
  */
 function currentState() {
-  return {
+  const state = {
     sort: currentSort,
     period: currentPeriod,
     search: currentSearch,
     page: Math.floor(currentOffset / limit) + 1,
   };
+  if (currentPublisher) state.publisher = currentPublisher;
+  if (currentMinDownloads > 0) state.min_downloads = currentMinDownloads;
+  return state;
 }
 
 /**
@@ -101,6 +106,8 @@ function applyStateFromUrl() {
   currentSort = state.sort;
   currentPeriod = state.period;
   currentSearch = state.search;
+  currentPublisher = typeof state.publisher === 'string' ? state.publisher : '';
+  currentMinDownloads = typeof state.min_downloads === 'number' && state.min_downloads > 0 ? state.min_downloads : 0;
   currentOffset = (state.page - 1) * limit;
 
   // Sync active tab classes
@@ -319,6 +326,12 @@ async function loadPackages() {
     if (currentSearch) {
       params.append('search', currentSearch);
     }
+    if (currentPublisher) {
+      params.append('publisher', currentPublisher);
+    }
+    if (currentMinDownloads > 0) {
+      params.append('min_downloads', String(currentMinDownloads));
+    }
     
     const response = await fetch(`/api/packages?${params}`);
     
@@ -393,6 +406,68 @@ function renderPackages(packages) {
       console.log('Copied:', cmd);
     }
   }));
+
+  // Stats-driven filters (publisher / min_downloads cohort) get a visible
+  // "clear filter" chip above the list — Back also works, but a chip is the
+  // explicit affordance (design D5).
+  if (currentPublisher || currentMinDownloads > 0) {
+    packagesEl.appendChild(buildFilterChip());
+  }
+}
+
+/**
+ * Build the "clear filter" chip shown above the list when a stats-driven
+ * filter (publisher / min_downloads cohort) is active.
+ * @returns {HTMLElement} the chip element
+ */
+function buildFilterChip() {
+  const chip = document.createElement('div');
+  chip.className = 'filter-chip';
+
+  const label = document.createElement('span');
+  label.className = 'filter-chip-label';
+  const parts = [];
+  if (currentPublisher) parts.push(`publisher: ${currentPublisher}`);
+  if (currentMinDownloads > 0) parts.push(`≥ ${formatNumber(currentMinDownloads)} downloads/30d`);
+  label.textContent = parts.join(' · ');
+  chip.appendChild(label);
+
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'filter-chip-clear';
+  clear.textContent = '× Clear filter';
+  clear.setAttribute('aria-label', 'Clear active filter');
+  clear.addEventListener('click', () => {
+    currentPublisher = '';
+    currentMinDownloads = 0;
+    currentOffset = 0;
+    syncUrl('replace');
+    loadPackages();
+  });
+  chip.appendChild(clear);
+  return chip;
+}
+
+/**
+ * Navigate from the stats view to the package list with a filter applied.
+ * Pushes a history entry (so Back returns to stats), clears the hash, and
+ * reloads the list. Used by interactive stats rows/cards (design D4/D5).
+ * @param {{publisher?: string, min_downloads?: number}} [filter]
+ */
+function navigateToList(filter = {}) {
+  if (typeof filter.publisher === 'string' && filter.publisher.trim()) {
+    currentPublisher = filter.publisher.trim();
+  }
+  if (typeof filter.min_downloads === 'number' && filter.min_downloads > 0) {
+    currentMinDownloads = filter.min_downloads;
+  }
+  currentSort = 'popular'; // cohort/publisher views default to popularity (design)
+  currentOffset = 0;
+
+  const url = `${location.pathname}?${buildUrlState(currentState())}`;
+  history.pushState({ view: 'list' }, '', url);
+  applyRouteVisibility();
+  loadPackages();
 }
 
 // Render pagination using design system
@@ -536,10 +611,24 @@ function renderEcosystem(data) {
   const distGrid = document.createElement('div');
   distGrid.className = 'stats-grid';
   distGrid.appendChild(statCard('Total packages', formatNumber(data.total_packages)));
-  distGrid.appendChild(statCard('Active packages (30d)', formatNumber(data.active_packages_30d)));
+  // Active 30d → cohort "has any downloads in 30d" (min_downloads=1).
+  distGrid.appendChild(makeClickableStatCard(
+    'Active packages (30d)',
+    formatNumber(data.active_packages_30d),
+    data.active_packages_30d > 0 ? () => navigateToList({ min_downloads: 1 }) : null,
+  ));
   distGrid.appendChild(statCard('Median downloads (30d)', dist.p50 == null ? '—' : formatNumber(dist.p50)));
-  distGrid.appendChild(statCard('p90 downloads (30d)', dist.p90 == null ? '—' : formatNumber(dist.p90)));
-  distGrid.appendChild(statCard('p99 downloads (30d)', dist.p99 == null ? '—' : formatNumber(dist.p99)));
+  // p90/p99 are cohort floors — clicking shows the packages at/above them.
+  distGrid.appendChild(makeClickableStatCard(
+    'p90 downloads (30d)',
+    dist.p90 == null ? '—' : formatNumber(dist.p90),
+    dist.p90 == null ? null : () => navigateToList({ min_downloads: dist.p90 }),
+  ));
+  distGrid.appendChild(makeClickableStatCard(
+    'p99 downloads (30d)',
+    dist.p99 == null ? '—' : formatNumber(dist.p99),
+    dist.p99 == null ? null : () => navigateToList({ min_downloads: dist.p99 }),
+  ));
   distGrid.appendChild(statCard('Median growth', dist.median_growth == null ? '—' : `${dist.median_growth > 0 ? '+' : ''}${dist.median_growth}%`));
   distSection.appendChild(distGrid);
   statsViewEl.appendChild(distSection);
@@ -554,8 +643,9 @@ function renderEcosystem(data) {
 
   const pubsGrid = document.createElement('div');
   pubsGrid.className = 'stats-grid stats-grid-2col';
-  pubsGrid.appendChild(publisherTable('By package count', data.top_publishers?.by_packages || []));
-  pubsGrid.appendChild(publisherTable('By 30-day downloads', data.top_publishers?.by_downloads || []));
+  const publisherClick = (publisher) => navigateToList({ publisher });
+  pubsGrid.appendChild(publisherTable('By package count', data.top_publishers?.by_packages || [], publisherClick));
+  pubsGrid.appendChild(publisherTable('By 30-day downloads', data.top_publishers?.by_downloads || [], publisherClick));
   pubsSection.appendChild(pubsGrid);
   statsViewEl.appendChild(pubsSection);
 
@@ -572,6 +662,20 @@ function renderEcosystem(data) {
   (data.top_packages || []).forEach((pkg) => {
     const li = document.createElement('li');
     li.className = 'top-list-item';
+    if (pkg.name) {
+      // Interactive: clicking opens the package detail modal (same as list).
+      li.classList.add('clickable');
+      li.setAttribute('role', 'link');
+      li.setAttribute('tabindex', '0');
+      li.setAttribute('aria-label', `Open package ${pkg.name}`);
+      li.addEventListener('click', () => openDetail(pkg.name));
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openDetail(pkg.name);
+        }
+      });
+    }
     const name = document.createElement('span');
     name.className = 'top-list-name';
     name.textContent = pkg.name; // textContent — safe
@@ -604,7 +708,32 @@ function statCard(label, value) {
   return card;
 }
 
-function publisherTable(title, entries) {
+/**
+ * A stat card that is a clickable cohort filter when `onClick` is provided;
+ * otherwise identical to statCard() (inert — e.g. null p90/p99 values).
+ * @param {string} label
+ * @param {string} value
+ * @param {(() => void)|null} onClick
+ * @returns {HTMLElement}
+ */
+function makeClickableStatCard(label, value, onClick) {
+  const card = statCard(label, value);
+  if (!onClick) return card;
+  card.classList.add('clickable');
+  card.setAttribute('role', 'link');
+  card.setAttribute('tabindex', '0');
+  card.setAttribute('aria-label', `${label}: ${value} — show matching packages`);
+  card.addEventListener('click', onClick);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onClick();
+    }
+  });
+  return card;
+}
+
+function publisherTable(title, entries, onClick) {
   const wrap = document.createElement('div');
   wrap.className = 'publisher-table';
   const h = document.createElement('h3');
@@ -625,6 +754,20 @@ function publisherTable(title, entries) {
   entries.forEach((entry) => {
     const li = document.createElement('li');
     li.className = 'publisher-list-item';
+    if (entry.publisher && onClick) {
+      // Interactive: clicking navigates to the publisher-filtered list.
+      li.classList.add('clickable');
+      li.setAttribute('role', 'link');
+      li.setAttribute('tabindex', '0');
+      li.setAttribute('aria-label', `Show packages by publisher ${entry.publisher}`);
+      li.addEventListener('click', () => onClick(entry.publisher));
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick(entry.publisher);
+        }
+      });
+    }
     const name = document.createElement('span');
     name.className = 'publisher-list-name';
     name.textContent = entry.publisher; // textContent — safe

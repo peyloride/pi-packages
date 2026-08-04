@@ -54,6 +54,7 @@ describe('db.ts', () => {
       assert.ok(columnNames.includes('npm_url'));
       assert.ok(columnNames.includes('first_seen'));
       assert.ok(columnNames.includes('last_publish'));
+      assert.ok(columnNames.includes('publisher_display'));
     });
 
     it('should have correct columns in daily_downloads table', () => {
