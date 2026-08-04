@@ -17,8 +17,8 @@ describe('cron.ts', () => {
   describe('parseCron', () => {
     it('should parse standard cron expression', () => {
       const schedule = parseCron('0 3 * * *');
-      assert.equal(schedule.minute, 0);
-      assert.equal(schedule.hour, 3);
+      assert.deepEqual(schedule.minute, [0]);
+      assert.deepEqual(schedule.hour, [3]);
       assert.equal(schedule.dayOfMonth, '*');
       assert.equal(schedule.month, '*');
       assert.equal(schedule.dayOfWeek, '*');
@@ -26,21 +26,37 @@ describe('cron.ts', () => {
 
     it('should parse cron with wildcard hour', () => {
       const schedule = parseCron('0 * * * *');
-      assert.equal(schedule.minute, 0);
+      assert.deepEqual(schedule.minute, [0]);
       assert.equal(schedule.hour, '*');
     });
 
-    it('should treat interval patterns as wildcards', () => {
+    it('expands a step field (*/N) to explicit values', () => {
+      // Regression: `*/4` used to be treated as a wildcard, so the default
+      // sync cron "0 */4 * * *" (every 4 hours) fired hourly instead.
       const schedule = parseCron('0 */4 * * *');
-      assert.equal(schedule.minute, 0);
-      assert.equal(schedule.hour, '*');  // */4 treated as wildcard
+      assert.deepEqual(schedule.minute, [0]);
+      assert.deepEqual(schedule.hour, [0, 4, 8, 12, 16, 20]); // every 4th hour
+      assert.equal(schedule.dayOfMonth, '*');
+    });
+
+    it('expands a minute step field (*/15) correctly', () => {
+      const schedule = parseCron('*/15 * * * *');
+      assert.deepEqual(schedule.minute, [0, 15, 30, 45]);
+      assert.equal(schedule.hour, '*');
+    });
+
+    it('expands comma lists and ranges', () => {
+      const schedule = parseCron('0,30 9-17 * * *');
+      assert.deepEqual(schedule.minute, [0, 30]);
+      assert.deepEqual(schedule.hour, [9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      assert.equal(schedule.dayOfMonth, '*');
     });
 
     it('should parse cron with specific day', () => {
       const schedule = parseCron('30 14 15 * *');
-      assert.equal(schedule.minute, 30);
-      assert.equal(schedule.hour, 14);
-      assert.equal(schedule.dayOfMonth, 15);
+      assert.deepEqual(schedule.minute, [30]);
+      assert.deepEqual(schedule.hour, [14]);
+      assert.deepEqual(schedule.dayOfMonth, [15]);
     });
 
     it('should throw on invalid cron expression', () => {
@@ -51,19 +67,19 @@ describe('cron.ts', () => {
 
   describe('shouldRun', () => {
     it('should return true when all conditions match', () => {
-      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: [0], hour: [3], dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T03:00:00Z');
       assert.equal(shouldRun(schedule, date), true);
     });
 
     it('should return false when minute does not match', () => {
-      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: [0], hour: [3], dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T03:30:00Z');
       assert.equal(shouldRun(schedule, date), false);
     });
 
     it('should return false when hour does not match', () => {
-      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      const schedule: CronSchedule = { minute: [0], hour: [3], dayOfMonth: '*', month: '*', dayOfWeek: '*' };
       const date = new Date('2024-01-15T05:00:00Z');
       assert.equal(shouldRun(schedule, date), false);
     });
@@ -75,27 +91,37 @@ describe('cron.ts', () => {
     });
 
     it('should match day of week', () => {
-      const schedule: CronSchedule = { minute: 0, hour: 3, dayOfMonth: '*', month: '*', dayOfWeek: 1 }; // Monday
+      const schedule: CronSchedule = { minute: [0], hour: [3], dayOfMonth: '*', month: '*', dayOfWeek: [1] }; // Monday
       const monday = new Date('2024-01-15T03:00:00Z'); // Jan 15, 2024 is Monday
       assert.equal(shouldRun(schedule, monday), true);
+    });
+
+    it('matches ONLY on the exact hours of a step field (0 */4 regression)', () => {
+      const schedule: CronSchedule = { minute: [0], hour: [0, 4, 8, 12, 16, 20], dayOfMonth: '*', month: '*', dayOfWeek: '*' };
+      assert.equal(shouldRun(schedule, new Date('2024-01-15T04:00:00Z')), true);  // 04:00 — on step
+      assert.equal(shouldRun(schedule, new Date('2024-01-15T05:00:00Z')), false); // 05:00 — NOT on step
+      assert.equal(shouldRun(schedule, new Date('2024-01-15T20:00:00Z')), true);  // 20:00 — on step
     });
   });
 
   describe('getNextRunTime', () => {
-    it('should return a Date object for fixed schedule', () => {
-      // Default cron is '0 3 * * *' (3 AM UTC), so it should return a date
+    it('returns the soonest of the incremental and full schedules', () => {
+      // Both SYNC_CRON ('0 */4 * * *') and SYNC_FULL_CRON ('0 3 * * *')
+      // are computable, so the result is the earlier upcoming match.
       const result = getNextRunTime();
-      assert.ok(result instanceof Date);
+      assert.ok(result instanceof Date, 'expected a computable next run time');
+      assert.ok(result.getTime() > Date.now(), 'next run must be in the future');
+      const minutesToRun = (result.getTime() - Date.now()) / 60000;
+      assert.ok(minutesToRun <= 4 * 60, `incremental every 4h → next within 4h, got ${Math.round(minutesToRun)}m`);
     });
 
-    it('should return next run time for fixed schedule', () => {
-      // This depends on current time, but we can test the logic
-      // by checking it returns a Date object
+    // The default '0 */4 * * *' has explicit hours (0,4,8,12,16,20), so
+    // nextFixedTime still finds a next run instead of returning null.
+    it('returns a next run for the default */4 incremental schedule', () => {
       const result = getNextRunTime();
-      // Since default is 3 AM UTC, it should return a date
-      if (result !== null) {
-        assert.ok(result instanceof Date);
-      }
+      assert.ok(result instanceof Date, 'expected a computable next run for */4');
+      const h = result.getUTCHours();
+      assert.ok([0, 4, 8, 12, 16, 20].includes(h), `expected hour in {0,4,8,12,16,20}, got ${h}`);
     });
   });
 
@@ -188,9 +214,9 @@ describe('cron.cronTick', () => {
   }
 
   it('runs a FULL sync when the full schedule matches (3 AM UTC)', async () => {
-    // parseCron('0 3 * * *') → minute=0, hour=3
-    // 03:00:00Z matches both full ('0 3 * * *') and incremental ('0 */4...' → hourly at :00)
-    // Full takes priority.
+    // parseCron('0 3 * * *') → minute=[0], hour=[3]
+    // 03:00:00Z matches both full ('0 3 * * *') and incremental ('0 */4' →
+    // hours [0,4,8,12,16,20]; 03:00 is NOT one of them). Full takes priority.
     queueOnePackageFetches();
     await cronTick(new Date('2024-01-15T03:00:00Z'));
     const result = getLastSyncResult();
@@ -200,8 +226,8 @@ describe('cron.cronTick', () => {
   });
 
   it('runs an INCREMENTAL sync when only the incremental schedule matches', async () => {
-    // parseCron('0 */4 * * *') → minute=0, hour='*' (*/4 is treated as wildcard)
-    // 04:00:00Z matches incremental (minute=0) but NOT full (hour != 3)
+    // parseCron('0 */4 * * *') → minute=[0], hour=[0,4,8,12,16,20].
+    // 04:00:00Z matches incremental (04:00 ∈ step hours) but NOT full (hour != 3).
     queueOnePackageFetches();
     await cronTick(new Date('2024-01-15T04:00:00Z'));
     const result = getLastSyncResult();

@@ -12,17 +12,70 @@ const SYNC_CRON = process.env.SYNC_CRON || '0 */4 * * *';       // Default: ever
 const SYNC_FULL_CRON = process.env.SYNC_FULL_CRON || '0 3 * * *'; // Default: 3 AM UTC daily
 
 export interface CronSchedule {
-  minute: number | '*';
-  hour: number | '*';
-  dayOfMonth: number | '*';
-  month: number | '*';
-  dayOfWeek: number | '*';
+  minute: number[] | '*';
+  hour: number[] | '*';
+  dayOfMonth: number[] | '*';
+  month: number[] | '*';
+  dayOfWeek: number[] | '*';
 }
 
-function parseCronField(field: string): number | '*' {
-  if (field === '*') return '*';
-  const n = parseInt(field, 10);
-  return isNaN(n) ? '*' : n;  // treat */N, 1-5, etc. as wildcard for scheduling
+// Field ranges for cron step/list/range expansion. minute/hour/dayOfWeek are
+// zero-based (0-59, 0-23, 0-7); dayOfMonth and month are one-based (1-31, 1-12)
+// to match cron semantics.
+const FIELD_RANGES: Record<keyof CronSchedule, { start: number; end: number }> = {
+  minute: { start: 0, end: 59 },
+  hour: { start: 0, end: 23 },
+  dayOfMonth: { start: 1, end: 31 },
+  month: { start: 1, end: 12 },
+  dayOfWeek: { start: 0, end: 7 },
+};
+
+/**
+ * Parse one cron field into a set of concrete values — `'*'` for wildcard,
+ * or an explicit list of numbers. Supports:
+ *   - `*`     wildcard (any value)
+ *   - `3`     a single value          -> [3]
+ *   - `0,30`  a comma list            -> [0, 30]
+ *   - `1-5`   a range                 -> [1, 2, 3, 4, 5]
+ *   - star/4  a step                  -> every 4th value of the field's range
+ *                                       (hour: [0,4,8,12,16,20]; minute: [0,4,8,...])
+ *
+ * Previously a step field like `star/4` was treated as a wildcard, so the
+ * default sync cron `0 star/4 * * *` (every 4th hour) fired on EVERY hour
+ * at :00 instead.
+ */
+function parseCronField(field: string, range: { start: number; end: number }): number[] | '*' {
+  const value = field.trim();
+  if (value === '*') return '*';
+
+  const stepMatch = /^\*\/(\d+)$/.exec(value);
+  if (stepMatch) {
+    const step = parseInt(stepMatch[1], 10);
+    if (step < 1) return '*';
+    const values: number[] = [];
+    for (let i = range.start; i <= range.end; i += step) values.push(i);
+    return values;
+  }
+
+  const rangeMatch = /^(\d+)-(\d+)$/.exec(value);
+  if (rangeMatch) {
+    const values: number[] = [];
+    for (let i = parseInt(rangeMatch[1], 10), end = parseInt(rangeMatch[2], 10); i <= end; i++) {
+      values.push(i);
+    }
+    return values.length > 0 ? values : '*';
+  }
+
+  if (value.includes(',')) {
+    const values = value
+      .split(',')
+      .map((v) => parseInt(v.trim(), 10))
+      .filter((n) => !Number.isNaN(n));
+    return values.length > 0 ? values : '*';
+  }
+
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) ? '*' : [n];
 }
 
 export function parseCron(expression: string): CronSchedule {
@@ -32,20 +85,24 @@ export function parseCron(expression: string): CronSchedule {
   }
 
   return {
-    minute: parseCronField(parts[0]),
-    hour: parseCronField(parts[1]),
-    dayOfMonth: parseCronField(parts[2]),
-    month: parseCronField(parts[3]),
-    dayOfWeek: parseCronField(parts[4]),
+    minute: parseCronField(parts[0], FIELD_RANGES.minute),
+    hour: parseCronField(parts[1], FIELD_RANGES.hour),
+    dayOfMonth: parseCronField(parts[2], FIELD_RANGES.dayOfMonth),
+    month: parseCronField(parts[3], FIELD_RANGES.month),
+    dayOfWeek: parseCronField(parts[4], FIELD_RANGES.dayOfWeek),
   };
 }
 
+function fieldMatches(field: number[] | '*', value: number): boolean {
+  return field === '*' || field.includes(value);
+}
+
 export function shouldRun(schedule: CronSchedule, now: Date): boolean {
-  if (schedule.minute !== '*' && now.getUTCMinutes() !== schedule.minute) return false;
-  if (schedule.hour !== '*' && now.getUTCHours() !== schedule.hour) return false;
-  if (schedule.dayOfMonth !== '*' && now.getUTCDate() !== schedule.dayOfMonth) return false;
-  if (schedule.month !== '*' && now.getUTCMonth() + 1 !== schedule.month) return false;
-  if (schedule.dayOfWeek !== '*' && now.getUTCDay() !== schedule.dayOfWeek) return false;
+  if (!fieldMatches(schedule.minute, now.getUTCMinutes())) return false;
+  if (!fieldMatches(schedule.hour, now.getUTCHours())) return false;
+  if (!fieldMatches(schedule.dayOfMonth, now.getUTCDate())) return false;
+  if (!fieldMatches(schedule.month, now.getUTCMonth() + 1)) return false;
+  if (!fieldMatches(schedule.dayOfWeek, now.getUTCDay())) return false;
   return true;
 }
 
@@ -93,25 +150,43 @@ export function startCron(): void {
 }
 
 /**
- * Compute the next fire time for a simple fixed-time cron like "0 3 * * *".
- * Returns null for interval/wildcard patterns (e.g. "0 *\/4 * * *", "0 * * * *")
- * whose next fire can't be derived from a single fixed hour+minute.
+ * Compute the next fire time for a fixed-time cron whose minute and hour are
+ * explicit values (single or list, e.g. "0 3 * * *" or "15 6,18 * * *").
+ * Returns null for wildcard patterns (e.g. "0 * * * *") whose next fire
+ * can't be derived from fixed hour+minute sets.
  */
 function nextFixedTime(expression: string): Date | null {
   const schedule = parseCron(expression);
 
-  // Can only compute next run for simple fixed-time crons
-  if (schedule.hour === '*' || schedule.minute === '*') return null;
+  // Can only compute next run for simple fixed-time crons (explicit minutes
+  // + explicit hours). A wildcard minute or hour means "every minute/hour".
+  if (schedule.minute === '*' || schedule.hour === '*') return null;
 
   const now = new Date();
-  const next = new Date(now);
-  next.setUTCHours(schedule.hour as number, schedule.minute as number, 0, 0);
 
-  if (next <= now) {
-    next.setUTCDate(next.getUTCDate() + 1);
+  // Search over the next 2 days of candidate (day, hour, minute) triples and
+  // return the soonest that matches the schedule's explicit sets.
+  for (let offsetDays = 0; offsetDays <= 1; offsetDays++) {
+    const day = new Date(now);
+    day.setUTCHours(0, 0, 0, 0);
+    day.setUTCDate(day.getUTCDate() + offsetDays);
+
+    // Skip days that don't match dayOfMonth / month / dayOfWeek when those
+    // are explicit (wildcards match any day).
+    if (schedule.dayOfMonth !== '*' && !schedule.dayOfMonth.includes(day.getUTCDate())) continue;
+    if (schedule.month !== '*' && !schedule.month.includes(day.getUTCMonth() + 1)) continue;
+    if (schedule.dayOfWeek !== '*' && !schedule.dayOfWeek.includes(day.getUTCDay())) continue;
+
+    for (const hour of schedule.hour) {
+      for (const minute of schedule.minute) {
+        const candidate = new Date(day);
+        candidate.setUTCHours(hour, minute, 0, 0);
+        if (candidate > now) return candidate;
+      }
+    }
   }
 
-  return next;
+  return null;
 }
 
 /**
