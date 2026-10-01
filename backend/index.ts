@@ -545,10 +545,12 @@ export function createApp(): Hono {
       const monthlyDownloads = downloads
         .reduce((sum, d) => sum + d.downloads, 0);
 
-      // Read materialized weekly growth from the packages table (computed at
-      // sync time) so the detail view's badge matches the list view exactly.
-      const growth: number | null = pkg.weekly_growth !== null && pkg.weekly_growth !== undefined
-        ? Math.round(pkg.weekly_growth * 10) / 10
+      // Read the materialized growth for the ACTIVE period (the badge is
+      // period-aware in the list view; the detail view must match it).
+      const period = parsePeriod(c.req.query('period'));
+      const growthColumn = `${period}_growth`;
+      const growth: number | null = pkg[growthColumn] !== null && pkg[growthColumn] !== undefined
+        ? Math.round(pkg[growthColumn] * 10) / 10
         : null;
 
       const sparkline = downloads.slice(-7).map(d => d.downloads);

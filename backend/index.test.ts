@@ -481,6 +481,17 @@ describe('index.ts API Routes', () => {
       assert.equal(body.growth, null);
     });
 
+    it('returns period-aware growth matching the ?period param', async () => {
+      // Distinct per-period values; detail must pick the requested one
+      // (previously always weekly regardless of period).
+      db.prepare('UPDATE packages SET daily_growth = 1.5, weekly_growth = 2.5, monthly_growth = 3.5').run('pkg-a');
+      for (const [period, expected] of [['daily', 1.5], ['weekly', 2.5], ['monthly', 3.5]] as const) {
+        const res = await app.request(`/api/packages/pkg-a?period=${period}`);
+        const body = (await res.json()) as any;
+        assert.equal(body.growth, expected, `period=${period}`);
+      }
+    });
+
     it('includes the github object for a package with repo metadata', async () => {
       const res = await app.request('/api/packages/pkg-a');
       const body = (await res.json()) as any;
