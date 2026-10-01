@@ -605,7 +605,7 @@ describe('sync.ts', () => {
         }),
       });
       // Unchanged packages still get a delta-range fetch (unless up-to-date).
-      // day-after-last-sync → today is 1 day, so 1 fetch for downloads.
+      // last-sync day -> today is 2 days, so 1 bulk fetch for downloads.
       const today = new Date().toISOString().split('T')[0];
       const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
       mockFetch.mockResolvedValueOnce({
@@ -620,6 +620,10 @@ describe('sync.ts', () => {
       assert.equal(result.newPackages, 0);
       assert.equal(result.updatedPackages, 0);
       assert.equal(result.mode, 'incremental');
+      // The delta fetch must actually run for unchanged packages (last sync
+      // was yesterday, not today) and its rows must be persisted.
+      const dlCount = (db.prepare('SELECT COUNT(*) as c FROM daily_downloads WHERE package_name = ?').get('sync-pkg') as { c: number }).c;
+      assert.equal(dlCount, 2);
     });
 
     it('detects version changes as updates, not new packages', async () => {

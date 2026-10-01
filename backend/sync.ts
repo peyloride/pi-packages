@@ -577,14 +577,20 @@ async function fetchAndPersistIncrementalDownloads(
       deltaStart = fullRangeStart;
       console.log(`[Sync] Gap since last sync is ${Math.round(daysSinceSync)} days — using full ${RETENTION_DAYS}-day range for unchanged packages`);
     } else {
-      deltaStart = fmt(new Date(lastSyncDate.getTime() + 24 * 60 * 60 * 1000));
+      // Re-fetch the last sync's own calendar day: it was likely a partial
+      // "today" count at sync time and is never finalized otherwise.
+      deltaStart = fmt(lastSyncDate);
     }
   } else {
     deltaStart = fullRangeStart;
     console.log(`[Sync] No previous sync found — using full ${RETENTION_DAYS}-day range for unchanged packages`);
   }
 
-  const unchangedUpToDate = deltaStart >= today;
+  // Skip the delta fetch only when the delta window is entirely in the future
+  // (last sync was today). `>=` here would skip whenever the last sync was
+  // yesterday too, since deltaStart == today then — a same-calendar-day
+  // equality, not an up-to-date sync.
+  const unchangedUpToDate = deltaStart > today;
 
   const newOrUpdatedNames = newOrUpdated.map(p => p.package.name);
   const unchangedNames = unchanged.map(p => p.package.name);
