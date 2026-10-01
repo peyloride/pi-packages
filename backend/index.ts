@@ -238,10 +238,13 @@ export function createApp(): Hono {
       const sort = c.req.query('sort') || 'popular';
       const period = parsePeriod(c.req.query('period'));
       const search = c.req.query('search') || '';
-      // Publisher filter: exact match on the materialized publisher_display
-      // column (set at sync time by resolvePublisher — "GitHub Actions" →
-      // repo owner), case-insensitive. Empty/missing = no filter.
-      const publisher = (c.req.query('publisher') || '').trim();
+      // Publisher filter: exact (case-insensitive) match on the materialized
+      // publisher_display column. Empty/missing = no filter. The ecosystem
+      // view's '(unknown)' sentinel maps to IS NULL (those rows have a NULL
+      // publisher_display, so an equality match would always return 0).
+      const rawPublisher = (c.req.query('publisher') || '').trim();
+      const publisher = rawPublisher === '(unknown)' ? '' : rawPublisher;
+      const publisherIsNull = rawPublisher === '(unknown)';
       // Minimum 30-day download floor (cohort filter from the stats view's
       // p90/p99/active cards). Non-numeric/negative → 0 (no filter).
       const rawMin = parseInt(c.req.query('min_downloads') || '', 10);
@@ -288,9 +291,12 @@ export function createApp(): Hono {
       // publisher_display column. Bind order matters — appended after the
       // search placeholders so the count + main queries bind consistently
       // (search placeholders, then publisher, then LIMIT/OFFSET).
+      // '(unknown)' filters for NULL publisher_display instead.
       const publisherCondition = publisher
         ? `AND p.publisher_display = ? COLLATE NOCASE`
-        : '';
+        : publisherIsNull
+          ? `AND p.publisher_display IS NULL`
+          : '';
       if (publisher) searchParams.push(publisher);
 
       // Build sort order and extra filter

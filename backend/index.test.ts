@@ -309,6 +309,16 @@ describe('index.ts API Routes', () => {
       assert.ok(!body.packages.some((p: any) => p.name === 'pkg-b'));
     });
 
+    it('maps the (unknown) publisher sentinel to NULL publisher_display', async () => {
+      // A package with no publisher at all (publisher_display NULL).
+      db.prepare(`INSERT INTO packages (name, version, first_seen) VALUES ('pkg-anon', '1.0.0', '2024-01-01')`).run();
+      // Previously: publisher_display = '(unknown)' matched nothing → 0 rows.
+      const res = await app.request('/api/packages?publisher=%28unknown%29');
+      const body = (await res.json()) as any;
+      assert.equal(body.packages.length, 1);
+      assert.equal(body.packages[0].name, 'pkg-anon');
+    });
+
     it('treats publisher like other params in the response-cache key (variant isolation)', async () => {
       // Different publisher values must not share a cached entry.
       const r1 = await app.request('/api/packages?publisher=testuser');
