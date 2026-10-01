@@ -848,7 +848,11 @@ export async function runFullSync(): Promise<SyncResult> {
   const packages = await fetchPiPackages();
   console.log(`[Sync] Saving ${packages.length} packages to database...`);
 
-  // 2. Save all package metadata
+  // 2. Diff BEFORE upserting — after the upsert every version matches the DB
+  //    and the report would always read 0 new / 0 updated.
+  const diff = diffPackages(packages);
+
+  // 3. Save all package metadata
   const db = getDb();
   db.exec('BEGIN TRANSACTION');
   try {
@@ -860,9 +864,6 @@ export async function runFullSync(): Promise<SyncResult> {
     db.exec('ROLLBACK');
     throw err;
   }
-
-  // 3. Diff to count new/updated for reporting
-  const diff = diffPackages(packages);
 
   // 4. Fetch download data in batches for ALL packages
   const packageNames = packages.map(p => p.package.name);

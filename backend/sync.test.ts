@@ -774,6 +774,55 @@ describe('sync.ts', () => {
       assert.equal(count, 2);
     });
 
+    it('reports new/updated counts from a diff taken before the upsert', async () => {
+      const { runFullSync, upsertPackage } = await import('./sync');
+
+      // pkg-old already in the DB at the same version (=> unchanged);
+      // pkg-new and pkg-upd are new/changed relative to the DB.
+      upsertPackage({
+        package: { name: 'pkg-old', version: '1.0.0', links: { npm: 'https://npmjs.com/pkg-old' } },
+        updated: '2024-01-01',
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          total: 3,
+          objects: [
+            { package: { name: 'pkg-old', version: '1.0.0', links: { npm: 'https://npmjs.com/pkg-old' } }, updated: '2024-01-01' },
+            { package: { name: 'pkg-new', version: '1.0.0', links: { npm: 'https://npmjs.com/pkg-new' } }, updated: '2024-01-02' },
+            { package: { name: 'pkg-upd', version: '2.0.0', links: { npm: 'https://npmjs.com/pkg-upd' } }, updated: '2024-01-03' },
+          ],
+        }),
+      });
+      // DB already has pkg-upd at 1.0.0 so the version change counts as updated.
+      upsertPackage({
+        package: { name: 'pkg-upd', version: '1.0.0', links: { npm: 'https://npmjs.com/pkg-upd' } },
+        updated: '2024-01-02',
+      });
+
+      const days = Array.from({ length: 5 }, (_, i) => ({
+        day: new Date(Date.now() - (i + 1) * 86400000).toISOString().split('T')[0],
+        downloads: 50,
+      }));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          'pkg-old': { downloads: days, package: 'pkg-old', start: days[4].day, end: days[0].day },
+          'pkg-new': { downloads: days, package: 'pkg-new', start: days[4].day, end: days[0].day },
+          'pkg-upd': { downloads: days, package: 'pkg-upd', start: days[4].day, end: days[0].day },
+        }),
+      });
+
+      const result = await runFullSync();
+      // Previously always 0: the diff ran after the upsert had already
+      // written the fetched versions into the DB.
+      assert.equal(result.newPackages, 1);
+      assert.equal(result.updatedPackages, 1);
+    });
+
     it('skips persisting packages with zero traffic', async () => {
       const { runFullSync } = await import('./sync');
 
