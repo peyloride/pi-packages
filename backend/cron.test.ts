@@ -59,6 +59,18 @@ describe('cron.ts', () => {
       assert.deepEqual(schedule.dayOfMonth, [15]);
     });
 
+    it('normalizes day-of-week 7 to 0 (Sunday alias)', () => {
+      // Regression: getUTCDay() yields 0-6, so a literal 7 never matched and
+      // "0 3 * * 7" silently never fired.
+      const schedule = parseCron('0 3 * * 7');
+      assert.deepEqual(schedule.dayOfWeek, [0]);
+      const sunday = new Date('2024-01-14T03:00:00Z'); // a Sunday
+      assert.equal(shouldRun(parseCron('0 3 * * 7'), sunday), true);
+      assert.equal(shouldRun(parseCron('0 3 * * 0'), sunday), true);
+      const range = parseCron('0 3 * * 5-7'); // Fri-Sun must include Sunday
+      assert.deepEqual(range.dayOfWeek, [0, 5, 6]);
+    });
+
     it('should throw on invalid cron expression', () => {
       assert.throws(() => parseCron('invalid'));
       assert.throws(() => parseCron('1 2'));

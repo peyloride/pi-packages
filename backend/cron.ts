@@ -78,18 +78,27 @@ function parseCronField(field: string, range: { start: number; end: number }): n
   return Number.isNaN(n) ? '*' : [n];
 }
 
+/** Normalize a day-of-week value to getUTCDay()'s 0-6 range (7 → 0, Sunday). */
+function normalizeDow(n: number): number {
+  return ((n % 7) + 7) % 7;
+}
+
 export function parseCron(expression: string): CronSchedule {
   const parts = expression.split(' ');
   if (parts.length !== 5) {
     throw new Error(`Invalid cron expression: ${expression}`);
   }
 
+  const dowField = parseCronField(parts[4], FIELD_RANGES.dayOfWeek);
+
   return {
     minute: parseCronField(parts[0], FIELD_RANGES.minute),
     hour: parseCronField(parts[1], FIELD_RANGES.hour),
     dayOfMonth: parseCronField(parts[2], FIELD_RANGES.dayOfMonth),
     month: parseCronField(parts[3], FIELD_RANGES.month),
-    dayOfWeek: parseCronField(parts[4], FIELD_RANGES.dayOfWeek),
+    // getUTCDay() yields 0-6; standard cron also accepts 7 as Sunday.
+    // Normalize at parse time or "0 3 * * 7" never fires.
+    dayOfWeek: dowField === '*' ? '*' : [...new Set(dowField.map(normalizeDow))].sort((a, b) => a - b),
   };
 }
 
