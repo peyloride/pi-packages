@@ -71,6 +71,16 @@ describe('cron.ts', () => {
       assert.deepEqual(range.dayOfWeek, [0, 5, 6]);
     });
 
+    it('ORs day-of-month and day-of-week when both are restricted', () => {
+      // 2024-01-01 is a Monday (the 1st); 2024-01-08 the next Monday.
+      // "0 3 1 * 1" = every Monday OR the 1st.
+      const schedule = parseCron('0 3 1 * 1');
+      assert.equal(shouldRun(schedule, new Date('2024-01-01T03:00:00Z')), true, 'Monday the 1st');
+      assert.equal(shouldRun(schedule, new Date('2024-01-08T03:00:00Z')), true, 'plain Monday');
+      assert.equal(shouldRun(schedule, new Date('2024-01-15T03:00:00Z')), true, 'another plain Monday');
+      assert.equal(shouldRun(schedule, new Date('2024-01-02T03:00:00Z')), false, 'Tuesday the 2nd');
+    });
+
     it('should throw on invalid cron expression', () => {
       assert.throws(() => parseCron('invalid'));
       assert.throws(() => parseCron('1 2'));

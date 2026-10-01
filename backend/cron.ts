@@ -109,9 +109,21 @@ function fieldMatches(field: number[] | '*', value: number): boolean {
 export function shouldRun(schedule: CronSchedule, now: Date): boolean {
   if (!fieldMatches(schedule.minute, now.getUTCMinutes())) return false;
   if (!fieldMatches(schedule.hour, now.getUTCHours())) return false;
-  if (!fieldMatches(schedule.dayOfMonth, now.getUTCDate())) return false;
   if (!fieldMatches(schedule.month, now.getUTCMonth() + 1)) return false;
-  if (!fieldMatches(schedule.dayOfWeek, now.getUTCDay())) return false;
+  // Standard cron semantics (Vixie cron): when BOTH day-of-month and
+  // day-of-week are restricted, a day matching EITHER fires (they are OR'd),
+  // not AND'd. "0 3 1 * 1" runs every Monday and the 1st (~13x/year), not
+  // only on Mondays that fall on the 1st (~1x/year).
+  const domRestricted = schedule.dayOfMonth !== '*';
+  const dowRestricted = schedule.dayOfWeek !== '*';
+  if (domRestricted && dowRestricted) {
+    const domMatch = schedule.dayOfMonth.includes(now.getUTCDate());
+    const dowMatch = schedule.dayOfWeek.includes(now.getUTCDay());
+    if (!domMatch && !dowMatch) return false;
+  } else {
+    if (domRestricted && !schedule.dayOfMonth.includes(now.getUTCDate())) return false;
+    if (dowRestricted && !schedule.dayOfWeek.includes(now.getUTCDay())) return false;
+  }
   return true;
 }
 
