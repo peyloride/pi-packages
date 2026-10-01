@@ -182,6 +182,28 @@ describe('sync.ts', () => {
       const downloads = await fetchDownloadsBatched(['pkg1']);
       assert.equal(downloads.size, 0);
     });
+
+    it('retries scoped-package fetches on 429 before succeeding', async () => {
+      const day1 = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      // Scoped packages go through single fetches: first a 429 (retried),
+      // then the success — same treatment as the bulk path. The single-fetch
+      // body IS the range object (not keyed by package name).
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { get: () => null } });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          downloads: [{ day: day1, downloads: 5 }],
+          package: '@scope/pkg',
+          start: day1,
+          end: day1,
+        }),
+      });
+
+      const downloads = await fetchDownloadsBatched(['@scope/pkg']);
+      assert.equal(downloads.size, 1);
+      assert.equal(mockFetch.mock.calls.length, 2, 'expected the 429 to be retried once');
+    });
   });
 
   describe('upsertPackage', () => {
@@ -576,7 +598,7 @@ describe('sync.ts', () => {
 
       // Older rows must survive the delta upsert...
       const old = (db.prepare("SELECT COUNT(*) as c FROM daily_downloads WHERE package_name = ? AND date <= date('now', '-10 days')").get('keep-history') as { c: number }).c;
-      assert.ok(old >= 35, `delta sync wiped history: only ${old.c ?? old} rows older than 10 days survived (expected ~35)`);
+      assert.ok(old >= 35, `delta sync wiped history: only ${old} rows older than 10 days survived (expected ~35)`);
       // ...and the delta days must be written with the fresh values
       const fresh = db.prepare('SELECT downloads FROM daily_downloads WHERE package_name = ? AND date = ?').get('keep-history', day(0)) as { downloads: number } | undefined;
       assert.equal(fresh?.downloads, 70);

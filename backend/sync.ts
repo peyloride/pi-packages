@@ -341,8 +341,14 @@ async function executeSingleFetch(
 ): Promise<DownloadData | null> {
   try {
     const rangeUrl = `${NPM_DOWNLOADS_URL}/range/${rangeStart}:${rangeEnd}/${encodeURIComponent(name)}`;
-    const response = await fetch(rangeUrl);
-    if (!response.ok) return null;
+    // npmFetch (not bare fetch): scoped packages get the same 429/5xx retry
+    // treatment as bulk batches. A non-OK response after retries is logged —
+    // silently returning null kept stale/missing scoped rows invisible.
+    const response = await npmFetch(rangeUrl);
+    if (!response.ok) {
+      console.warn(`[Sync] Downloads fetch failed for scoped package ${name} (${rangeStart}:${rangeEnd}): HTTP ${response.status} after ${MAX_RETRIES} attempts — keeping existing rows`);
+      return null;
+    }
     const data = await response.json() as unknown;
     if (!isRangeDownloads(data)) return null;
     const daily = new Map<string, number>();
@@ -353,7 +359,8 @@ async function executeSingleFetch(
     const stats = aggregateStats(daily, monthStart, weekAgo, twoWeeksAgo);
     if (stats.weekly === 0 && stats.monthly === 0) return null;
     return { daily, ...stats };
-  } catch {
+  } catch (err) {
+    console.warn(`[Sync] Downloads fetch errored for scoped package ${name}: ${err instanceof Error ? err.message : err} — keeping existing rows`);
     return null;
   }
 }
