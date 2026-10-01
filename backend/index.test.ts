@@ -484,7 +484,7 @@ describe('index.ts API Routes', () => {
     it('returns period-aware growth matching the ?period param', async () => {
       // Distinct per-period values; detail must pick the requested one
       // (previously always weekly regardless of period).
-      db.prepare('UPDATE packages SET daily_growth = 1.5, weekly_growth = 2.5, monthly_growth = 3.5').run('pkg-a');
+      db.prepare('UPDATE packages SET daily_growth = ?, weekly_growth = ?, monthly_growth = ?').run(1.5, 2.5, 3.5);
       for (const [period, expected] of [['daily', 1.5], ['weekly', 2.5], ['monthly', 3.5]] as const) {
         const res = await app.request(`/api/packages/pkg-a?period=${period}`);
         const body = (await res.json()) as any;
