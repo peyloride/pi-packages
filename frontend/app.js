@@ -491,6 +491,10 @@ function navigateToList(filter = {}) {
   }
   currentSort = 'popular'; // cohort/publisher views default to popularity (design)
   currentOffset = 0;
+  // Sync the sort-tab active classes — the click handlers' guard
+  // (dataset.sort === currentSort) would otherwise silently ignore the
+  // next click on "Popular".
+  sortFilters.forEach((f) => f.classList.toggle('active', f.dataset.sort === currentSort));
 
   const url = `${location.pathname}?${buildUrlState(currentState())}`;
   history.pushState({ view: 'list' }, '', url);
