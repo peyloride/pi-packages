@@ -116,6 +116,25 @@ describe('assets.ts', () => {
       }
     });
 
+    it('stamps relative and root-absolute refs in every reference kind', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'assets-cover-'));
+      try {
+        // All four formerly-unstamped shapes (they'd be served immutable
+        // from a URL that never changes — permanent staleness).
+        writeFileSync(join(dir, 'rel.html'), '<link href="styles.css">');
+        writeFileSync(join(dir, 'styles.css'), "@import '/base.css';");
+        writeFileSync(join(dir, 'abs.js'), "import { x } from '/lib/x.js';\nexport { x };");
+        writeFileSync(join(dir, 'base.css'), 'body { background: url(/bg.png); }');
+        const cache = buildAssetCache(dir, 'v7');
+        assert.ok(cache.get('/rel.html')!.content.includes('styles.css?v=v7'), 'relative HTML href');
+        assert.ok(cache.get('/styles.css')!.content.includes("'/base.css?v=v7'"), 'root-absolute @import');
+        assert.ok(cache.get('/abs.js')!.content.includes("'/lib/x.js?v=v7'"), 'root-absolute JS import');
+        assert.ok(cache.get('/base.css')!.content.includes('url(/bg.png?v=v7)'), 'root-absolute url()');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('leaves explicit query strings alone (does not double-stamp)', () => {
       const dir = mkdtempSync(join(tmpdir(), 'assets-query-'));
       try {

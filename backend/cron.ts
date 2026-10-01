@@ -117,12 +117,12 @@ export function shouldRun(schedule: CronSchedule, now: Date): boolean {
   const domRestricted = schedule.dayOfMonth !== '*';
   const dowRestricted = schedule.dayOfWeek !== '*';
   if (domRestricted && dowRestricted) {
-    const domMatch = schedule.dayOfMonth.includes(now.getUTCDate());
-    const dowMatch = schedule.dayOfWeek.includes(now.getUTCDay());
+    const domMatch = (schedule.dayOfMonth as number[]).includes(now.getUTCDate());
+    const dowMatch = (schedule.dayOfWeek as number[]).includes(now.getUTCDay());
     if (!domMatch && !dowMatch) return false;
   } else {
-    if (domRestricted && !schedule.dayOfMonth.includes(now.getUTCDate())) return false;
-    if (dowRestricted && !schedule.dayOfWeek.includes(now.getUTCDay())) return false;
+    if (domRestricted && !(schedule.dayOfMonth as number[]).includes(now.getUTCDate())) return false;
+    if (dowRestricted && !(schedule.dayOfWeek as number[]).includes(now.getUTCDay())) return false;
   }
   return true;
 }

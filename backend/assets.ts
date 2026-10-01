@@ -92,28 +92,32 @@ function appendVersion(spec: string, version: string): string {
  *   - CSS:       `@import './x.css';` and `url('./x.png')`
  */
 function stampInternalReferences(content: string, version: string): string {
-  // JS import / re-export specifiers. Capture the specifier without quotes,
-  // only relative ones (start with `.`). Leaves absolute URLs untouched.
+  // JS import / re-export specifiers. Both dot-relative ('./x.js') and
+  // root-absolute ('/x.js') forms are stamped — anything served with a
+  // 1-year immutable header must have a URL that rotates on deploy.
   content = content.replace(
-    /(\b(?:from|import)\s*)(["'])(\.\S+?)\2/g,
-    (_m, kw, q, spec) => `${kw}${q}${appendVersion(spec, version)}${q}`,
+    /(\b(?:from|import)\s*)(["'])((?:\.|\/)[^"'?\s]\S*?)\2/g,
+    (_m, kw, q, spec) => isStampable(spec) ? `${kw}${q}${appendVersion(spec, version)}${q}` : _m,
   );
 
   // CSS @import and url(). Match optional quotes around the URL.
   content = content.replace(
     /(url\(\s*)(["']?)([^"'\s)]+)(\2\s*\))/g,
-    (_m, pre, q, spec, post) => isRelative(spec) ? `${pre}${q}${appendVersion(spec, version)}${post}` : _m,
+    (_m, pre, q, spec, post) => isStampable(spec) ? `${pre}${q}${appendVersion(spec, version)}${post}` : _m,
   );
   content = content.replace(
-    /(@import\s+)(["'])(\.\S+?)\2/g,
-    (_m, kw, q, spec) => `${kw}${q}${appendVersion(spec, version)}${q}`,
+    /(@import\s+)(["'])((?:\.|\/)[^"'\s]\S*?)\2/g,
+    (_m, kw, q, spec) => isStampable(spec) ? `${kw}${q}${appendVersion(spec, version)}${q}` : _m,
   );
 
   return content;
 }
 
-function isRelative(spec: string): boolean {
-  return spec.startsWith('.') || spec.startsWith('/');
+/** A spec we stamp: same-origin (relative/root-absolute), not external. */
+function isStampable(spec: string): boolean {
+  if (spec.startsWith('//')) return false; // protocol-relative = external
+  if (/^[a-z][a-z0-9+.-]*:/i.test(spec)) return false; // http:, data:, blob:, mailto:, …
+  return true;
 }
 
 /**
@@ -125,8 +129,8 @@ export function buildAssetCache(root: string, version: string): Map<string, Stam
 
   const stripHtml = (raw: string, version: string): string =>
     raw.replace(
-      /((?:href|src)=)(["'])(\/[^"'?#]+?\.(?:css|js|mjs|svg|png|jpe?g|gif|webp|ico|woff2?))\2/g,
-      (_m, attr, q, path) => `${attr}${q}${appendVersion(path, version)}${q}`,
+      /((?:href|src)=)(["'])([^"'?#]+?\.(?:css|js|mjs|svg|png|jpe?g|gif|webp|ico|woff2?))\2/g,
+      (_m, attr, q, path) => isStampable(path) ? `${attr}${q}${appendVersion(path, version)}${q}` : _m,
     );
 
   const walk = (absDir: string, urlPrefix: string) => {
