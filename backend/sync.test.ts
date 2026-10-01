@@ -529,6 +529,59 @@ describe('sync.ts', () => {
       assert.ok(meta?.value);
     });
 
+    it('delta incremental sync preserves older history for unchanged packages', async () => {
+      const { runIncrementalSync, upsertPackage, upsertDownloads } = await import('./sync');
+
+      // Seed: existing package with the same version npm will return (=> unchanged)
+      upsertPackage({
+        package: { name: 'keep-history', version: '1.0.0', links: { npm: 'https://npmjs.com/keep-history' } },
+        updated: '2024-01-15',
+      });
+      // 45 days of history, 100 downloads/day
+      const day = (n: number) => new Date(Date.now() - n * 86400000).toISOString().split('T')[0];
+      const history = new Map<string, number>();
+      for (let i = 0; i < 45; i++) history.set(day(i), 100);
+      upsertDownloads('keep-history', { daily: history, weekly: 700, monthly: 3000, lastWeek: 700 } as any);
+
+      // Last sync 3 days ago -> delta window day(2)..today -> a delta fetch runs
+      db.prepare("INSERT INTO sync_meta (key, value) VALUES ('last_incremental_sync', ?)").run(new Date(Date.now() - 3 * 86400000).toISOString());
+
+      // npm search returns the same version -> package is "unchanged"
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          total: 1,
+          objects: [{ package: { name: 'keep-history', version: '1.0.0', links: { npm: 'https://npmjs.com/keep-history' } }, updated: '2024-01-15' }],
+        }),
+      });
+      // delta downloads response: only the last 3 days
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          'keep-history': {
+            package: 'keep-history',
+            start: day(2), end: day(0),
+            downloads: [
+              { day: day(2), downloads: 50 },
+              { day: day(1), downloads: 60 },
+              { day: day(0), downloads: 70 },
+            ],
+          },
+        }),
+      });
+
+      await runIncrementalSync();
+
+      // Older rows must survive the delta upsert...
+      const old = (db.prepare("SELECT COUNT(*) as c FROM daily_downloads WHERE package_name = ? AND date <= date('now', '-10 days')").get('keep-history') as { c: number }).c;
+      assert.ok(old >= 35, `delta sync wiped history: only ${old.c ?? old} rows older than 10 days survived (expected ~35)`);
+      // ...and the delta days must be written with the fresh values
+      const fresh = db.prepare('SELECT downloads FROM daily_downloads WHERE package_name = ? AND date = ?').get('keep-history', day(0)) as { downloads: number } | undefined;
+      assert.equal(fresh?.downloads, 70);
+    });
+
     it('records no new packages when the DB already matches npm', async () => {
       const { runIncrementalSync, upsertPackage } = await import('./sync');
 

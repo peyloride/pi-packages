@@ -595,8 +595,8 @@ async function fetchAndPersistIncrementalDownloads(
   const unchangedScoped = unchangedNames.filter(isScopedPackage);
 
   type Task =
-    | { kind: 'bulk'; names: string[]; rangeStart: string; rangeEnd: string; fullRange: true }
-    | { kind: 'single'; names: [string]; rangeStart: string; rangeEnd: string; fullRange: true };
+    | { kind: 'bulk'; names: string[]; rangeStart: string; rangeEnd: string; fullRange: boolean }
+    | { kind: 'single'; names: [string]; rangeStart: string; rangeEnd: string; fullRange: boolean };
 
   const chunk = <T>(arr: T[], size: number): T[][] => {
     const out: T[][] = [];
@@ -614,10 +614,10 @@ async function fetchAndPersistIncrementalDownloads(
     })),
     // Unchanged: delta range (skipped entirely if up-to-date)
     ...(unchangedUpToDate ? [] : chunk(unchangedNonScoped, BATCH_SIZE).map(names => ({
-      kind: 'bulk' as const, names, rangeStart: deltaStart, rangeEnd: today, fullRange: true as const,
+      kind: 'bulk' as const, names, rangeStart: deltaStart, rangeEnd: today, fullRange: false as const,
     }))),
     ...(unchangedUpToDate ? [] : unchangedScoped.map(name => ({
-      kind: 'single' as const, names: [name] as [string], rangeStart: deltaStart, rangeEnd: today, fullRange: true as const,
+      kind: 'single' as const, names: [name] as [string], rangeStart: deltaStart, rangeEnd: today, fullRange: false as const,
     }))),
   ];
 
