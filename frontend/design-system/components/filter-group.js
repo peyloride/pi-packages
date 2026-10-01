@@ -121,7 +121,12 @@ export class FilterGroup {
         ${escapeHtml(f.label)}
       </button>
     `).join('');
-    
+
+    // Replace-with-clone strips the old buttons' listeners before rebinding,
+    // so repeated setFilters calls don't stack click handlers.
+    this.buttons.forEach(button => {
+      button.replaceWith(button.cloneNode(true));
+    });
     this.buttons = this.container.querySelectorAll('.filter');
     this._init();
   }

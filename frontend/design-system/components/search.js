@@ -55,12 +55,13 @@ export class Search {
     // Bind events
     this._handleInput = debounce(this._handleInput.bind(this), this.options.debounceDelay);
     this.input.addEventListener('input', this._handleInput);
-    
-    // Track input state
-    this.input.addEventListener('input', () => {
+
+    // Track input state — kept as a named handler so destroy() can remove it.
+    this._handleInputState = () => {
       const hasInput = this.input.value.trim().length > 0;
       this.container.dataset.hasInput = hasInput;
-    });
+    };
+    this.input.addEventListener('input', this._handleInputState);
     
     // Global keyboard shortcut
     this._handleKeydown = this._handleKeydown.bind(this);
@@ -118,6 +119,7 @@ export class Search {
    */
   destroy() {
     this.input.removeEventListener('input', this._handleInput);
+    this.input.removeEventListener('input', this._handleInputState);
     document.removeEventListener('keydown', this._handleKeydown);
   }
 }
