@@ -15,11 +15,15 @@
  */
 export function formatNumber(num) {
   if (num === null || num === undefined) return '—';
+  if (typeof num !== 'number' || Number.isNaN(num)) return '—';
+  // K branch: the .toFixed(1) rounds up at 9999.95K+ — display 1.0M instead
+  // of a nonsense 1000.0K. The M branch rounds first for the same reason.
   if (num >= 1000000) {
     return (num / 1000000).toFixed(1) + 'M';
   }
   if (num >= 1000) {
-    return (num / 1000).toFixed(1) + 'K';
+    const k = (num / 1000).toFixed(1);
+    return k === '1000.0' ? '1.0M' : k + 'K';
   }
   return num.toLocaleString();
 }
@@ -31,8 +35,9 @@ export function formatNumber(num) {
  */
 export function timeAgo(dateString) {
   if (!dateString) return '';
-  
+
   const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return ''; // unparseable — no "NaNy ago"
   const now = new Date();
   const diffMs = now - date;
   const diffMins = Math.floor(diffMs / 60000);

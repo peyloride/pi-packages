@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeHtml, sanitizeUrl } from './utils.js';
+import { escapeHtml, sanitizeUrl, formatNumber, timeAgo } from './utils.js';
 
 // These helpers guard against stored XSS in the package cards: every npm-sourced
 // field (description, name, publisher, URLs) flows through them before being
@@ -67,5 +67,45 @@ describe('sanitizeUrl', () => {
     assert.equal(sanitizeUrl(null), '#');
     assert.equal(sanitizeUrl(undefined), '#');
     assert.equal(sanitizeUrl(''), '#');
+  });
+});
+
+describe('formatNumber', () => {
+  it('formats compact magnitudes', () => {
+    assert.equal(formatNumber(1500000), '1.5M');
+    assert.equal(formatNumber(3500), '3.5K');
+    assert.equal(formatNumber(999), '999');
+  });
+
+  it('rounds up into M instead of printing 1000.0K', () => {
+    assert.equal(formatNumber(999950), '1.0M');
+    assert.equal(formatNumber(999999), '1.0M');
+    assert.equal(formatNumber(999949), '999.9K');
+  });
+
+  it('returns — for null/undefined/NaN', () => {
+    assert.equal(formatNumber(null), '—');
+    assert.equal(formatNumber(undefined), '—');
+    assert.equal(formatNumber(NaN), '—');
+  });
+});
+
+describe('timeAgo', () => {
+  it('formats relative times', () => {
+    const now = Date.now();
+    assert.equal(timeAgo(new Date(now - 30000).toISOString()), 'just now');
+    assert.equal(timeAgo(new Date(now - 5 * 60000).toISOString()), '5m ago');
+    assert.equal(timeAgo(new Date(now - 3 * 3600000).toISOString()), '3h ago');
+  });
+
+  it('returns empty string for unparseable input (no "NaNy ago")', () => {
+    assert.equal(timeAgo('not a date'), '');
+    assert.equal(timeAgo('undefined'), '');
+  });
+
+  it('returns empty string for missing input', () => {
+    assert.equal(timeAgo(''), '');
+    assert.equal(timeAgo(null), '');
+    assert.equal(timeAgo(undefined), '');
   });
 });
