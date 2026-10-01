@@ -120,7 +120,10 @@ function selectReposToFetch(db: ReturnType<typeof getDb>, budget: number): strin
 
 /**
  * Fetch metadata for a single repo. Returns false when the step should stop
- * (rate limit).
+ * (rate limit). A 403 only means rate limiting when GitHub says so
+ * (x-ratelimit-remaining: 0); SSO-enforced orgs, abuse detection, and blocked
+ * users also return 403 — treating those as "stop" left the repo unpersisted,
+ * still sorted as never-fetched, starving every repo behind it forever.
  */
 async function fetchOneRepo(
   repo: string,
@@ -145,9 +148,19 @@ async function fetchOneRepo(
   if (res.status === 404) {
     return { ok: false, stop: false, reason: '404' };
   }
-  if (res.status === 403 || res.status === 429) {
-    // Rate limited (or abuse). Stop the whole step; don't hammer.
-    return { ok: false, stop: true, reason: `HTTP ${res.status}` };
+  if (res.status === 429) {
+    return { ok: false, stop: true, reason: 'HTTP 429' };
+  }
+  if (res.status === 403) {
+    const remaining = res.headers.get('x-ratelimit-remaining');
+    const isRateLimit = remaining === '0';
+    if (isRateLimit) {
+      return { ok: false, stop: true, reason: 'HTTP 403 (rate limit)' };
+    }
+    // Non-rate-limit 403 (SSO enforcement, abuse detection, blocked user):
+    // persist cooldown nulls like a 404 so the 30-day retry window applies
+    // and the repo cannot starve the queue.
+    return { ok: false, stop: false, reason: '403' };
   }
   if (!res.ok) {
     return { ok: false, stop: false, reason: `HTTP ${res.status}` };
@@ -239,8 +252,9 @@ export async function syncRepoMeta(
       stoppedForRateLimit = true;
       console.warn(`[Sync] GitHub repo meta: ${result.reason} — stopping this run (rate limit), ${fetched}/${repos.length} done`);
       break;
-    } else if (result.reason === '404') {
-      // Repo gone/renamed: store nulls + fetched_at so it's not re-tried
+    } else if (result.reason === '404' || result.reason === '403') {
+      // Repo gone/renamed, or a persistent non-rate-limit 403 (SSO org,
+      // abuse detection): store nulls + fetched_at so it's not re-tried
       // every sync, but becomes eligible again after the cooldown (D4).
       upsertRepoMeta(db, repo, { stars: null, forks: null, openIssues: null, license: null, archived: false, pushedAt: null }, nowIso);
       fetched++;

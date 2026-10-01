@@ -220,6 +220,48 @@ describe('repoMeta.ts', () => {
       assert.equal(c, undefined); // never fetched
     });
 
+    it('stops on 403 with x-ratelimit-remaining: 0 (true rate limit)', async () => {
+      seedPackage('owner/rl');
+      setBudget(1);
+      let calls = 0;
+      const fetchFn: any = async () => {
+        calls++;
+        return okResponse(null, 403, { 'x-ratelimit-remaining': '0' });
+      };
+      const result = await syncRepoMeta(fetchFn);
+      assert.equal(result.stoppedForRateLimit, true);
+      assert.equal(calls, 1);
+    });
+
+    it('treats a non-rate-limit 403 (SSO org) like a 404: persist cooldown, keep going', async () => {
+      const db = getDb();
+      seedPackage('owner/sso');
+      seedPackage('owner/after');
+      setBudget(2);
+      const fetchFn: any = async (url: string) => {
+        // No x-ratelimit-remaining header at all — SSO/abuse 403 on the
+        // sso repo specifically (selection order is by package name, so
+        // key off the URL, not the call count).
+        if (url.endsWith('/owner/sso')) return okResponse(null, 403);
+        return okResponse(makeRepoPayload());
+      };
+
+      const result = await syncRepoMeta(fetchFn);
+
+      // The run must NOT stop — the second repo is still fetched.
+      assert.equal(result.stoppedForRateLimit, false);
+      assert.equal(result.fetched, 2);
+      // The 403 repo got cooldown nulls, so it does not re-select as
+      // never-fetched on the next run.
+      const row = db.prepare('SELECT * FROM repo_meta WHERE repo = ?').get('owner/sso') as any;
+      assert.ok(row);
+      assert.equal(row.stars, null);
+      assert.ok(row.fetched_at);
+      const after = db.prepare('SELECT * FROM repo_meta WHERE repo = ?').get('owner/after') as any;
+      assert.ok(after);
+      assert.equal(after.stars, 42);
+    });
+
     it('sends the Authorization Bearer header when GITHUB_TOKEN is set', async () => {
       seedPackage('owner/t');
       process.env.GITHUB_TOKEN = 'ghp_test123';
