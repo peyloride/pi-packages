@@ -1,14 +1,16 @@
 /**
  * FilterGroup Component
- * 
+ *
  * A group of filter buttons with active state management.
- * 
+ *
  * Usage:
  *   const filters = new FilterGroup('.filters', {
  *     onChange: (activeFilter) => { console.log(activeFilter); }
  *   });
- * 
+ *
  * ═══════════════════════════════════════════════════════════════════ */
+
+import { escapeHtml } from '../js/utils.js';
 
 export class FilterGroup {
   /**
@@ -112,10 +114,11 @@ export class FilterGroup {
    * @param {Array} filters - Array of { value, label, icon } objects
    */
   setFilters(filters) {
+    // Escape interpolated values: filter options may be built from API data.
     this.container.innerHTML = filters.map(f => `
-      <button class="filter" data-sort="${f.value}">
-        ${f.icon ? `<span class="filter-icon">${f.icon}</span>` : ''}
-        ${f.label}
+      <button class="filter" data-sort="${escapeHtml(f.value)}">
+        ${f.icon ? `<span class="filter-icon">${escapeHtml(f.icon)}</span>` : ''}
+        ${escapeHtml(f.label)}
       </button>
     `).join('');
     

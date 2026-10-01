@@ -1,9 +1,16 @@
 /**
  * State Components
- * 
+ *
  * Loading, empty, and error state components for consistent UI.
- * 
+ *
+ * All string options are HTML-escaped before interpolation: these components
+ * are the natural place to surface API error messages and dataset-derived
+ * text, so the sinks defend themselves (defense-in-depth against stored XSS
+ * from a future caller).
+ *
  * ═══════════════════════════════════════════════════════════════════ */
+
+import { escapeHtml } from '../js/utils.js';
 
 /**
  * Loading State Component
@@ -19,7 +26,7 @@ export function LoadingState(options = {}) {
 
   const container = document.createElement('div');
   container.className = 'loading';
-  
+
   let spinnerHtml = '';
   if (showSpinner) {
     spinnerHtml = `<div class="loading-spinner ${size !== 'md' ? `loading-spinner-${size}` : ''}"></div>`;
@@ -27,7 +34,7 @@ export function LoadingState(options = {}) {
 
   container.innerHTML = `
     ${spinnerHtml}
-    <span>${message}</span>
+    <span>${escapeHtml(message)}</span>
   `;
 
   return container;
@@ -51,13 +58,13 @@ export function EmptyState(options = {}) {
 
   let actionHtml = '';
   if (action) {
-    actionHtml = `<button class="empty-action">${action.label}</button>`;
+    actionHtml = `<button class="empty-action">${escapeHtml(action.label)}</button>`;
   }
 
   container.innerHTML = `
-    ${icon ? `<div class="empty-icon">${icon}</div>` : ''}
-    <div class="empty-title">${title}</div>
-    <p class="empty-message">${message}</p>
+    ${icon ? `<div class="empty-icon">${escapeHtml(icon)}</div>` : ''}
+    <div class="empty-title">${escapeHtml(title)}</div>
+    <p class="empty-message">${escapeHtml(message)}</p>
     ${actionHtml}
   `;
 
@@ -93,8 +100,8 @@ export function ErrorState(options = {}) {
 
   container.innerHTML = `
     <div class="error-message">
-      <strong>${title}</strong>
-      <p>${message}</p>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(message)}</p>
     </div>
     ${retryHtml}
   `;
