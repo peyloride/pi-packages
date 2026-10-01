@@ -522,12 +522,25 @@ describe('index.ts API Routes', () => {
       assert.equal(body.total_packages, 2);
     });
 
-    it('serves from the response cache on a second request', async () => {
+    it('serves identical JSON on repeat requests (stable body)', async () => {
       const res1 = await app.request('/api/stats');
       const body1 = await res1.json();
       const res2 = await app.request('/api/stats');
       const body2 = await res2.json();
       assert.deepEqual(body2, body1);
+    });
+
+    it('keeps volatile stats fields live (not response-cached)', async () => {
+      // First request caches nothing for /api/stats anymore.
+      const res1 = await app.request('/api/stats');
+      const b1 = (await res1.json()) as any;
+      // A package added after the first request must show up immediately —
+      // the old response-cache served a stale total for up to 60s.
+      db.prepare(`INSERT INTO packages (name, version) VALUES ('pkg-new', '1.0.0')`).run();
+      const res2 = await app.request('/api/stats');
+      const b2 = (await res2.json()) as any;
+      assert.equal(b1.total_packages, 2);
+      assert.equal(b2.total_packages, 3);
     });
 
     it('falls back to live recompute when no stats cache exists', async () => {

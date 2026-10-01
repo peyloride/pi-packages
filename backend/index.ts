@@ -578,58 +578,39 @@ export function createApp(): Hono {
    * GET /api/stats - Get ecosystem statistics
    */
   app.get('/api/stats', async (c) => {
-    try {
-      const key = responseCache.key(['stats']);
-      const cached = responseCache.get(key);
-      if (cached) {
-        return new Response(cached.body, {
-          status: cached.status,
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            'cache-control': API_CACHE_CONTROL,
-          },
-        });
-      }
-
-      // Read materialized stats (computed once per sync). Falls back to a live
-      // recompute only on cold start (no sync has ever run).
-      let stats = getStatsCache();
-      if (!stats) {
-        stats = recomputeStatsCache();
-      }
-
-      const db = getDb();
-      const nextSyncTime = getNextRunTime();
-      const lastResult = getLastSyncResult();
-
-      const syncMetaRow = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('last_incremental_sync') as { value: string } | undefined;
-
-      // total_packages: always live from the DB. The cached value can go stale
-      // after an external write to `packages` that doesn't recompute the stats
-      // cache (e.g. a manual `nub run sync` from the CLI, or any future direct
-      // write). COUNT(*) on this table is sub-millisecond, so we skip the cache
-      // for this one field and trust it for everything else.
-      const liveTotal = (db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number }).count;
-
-      const resultBody = {
-        total_packages: liveTotal,
-        total_weekly_downloads: stats.total_weekly_downloads,
-        total_monthly_downloads: stats.total_monthly_downloads,
-        average_growth: stats.average_growth,
-        last_sync: syncMetaRow?.value || null,
-        next_sync: nextSyncTime?.toISOString() || null,
-        sync_running: isSyncRunning(),
-        last_sync_mode: lastResult?.mode || null,
-      };
-
-      const serialized = JSON.stringify(resultBody);
-      responseCache.set(key, serialized, 200);
-
-      return c.json(resultBody, 200, { 'cache-control': API_CACHE_CONTROL });
-    } catch (err) {
-      console.error('[API] Error fetching stats:', err);
-      return c.json({ error: 'Failed to fetch stats' }, 500);
+    // Volatile fields (sync_running, next_sync, live total) are deliberately
+    // NOT response-cached — the version key alone would serve a stale
+    // sync_running/total for up to 60s, contradicting their per-request
+    // contract. Only the materialized aggregates are cached (they live in
+    // getStatsCache(), refreshed per sync).
+    let stats = getStatsCache();
+    if (!stats) {
+      stats = recomputeStatsCache();
     }
+
+    const db = getDb();
+    const nextSyncTime = getNextRunTime();
+    const lastResult = getLastSyncResult();
+
+    const syncMetaRow = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('last_incremental_sync') as { value: string } | undefined;
+
+    // total_packages: always live from the DB. The cached value can go stale
+    // after an external write to `packages` that doesn't recompute the stats
+    // cache (e.g. a manual `nub run sync` from the CLI, or any future direct
+    // write). COUNT(*) on this table is sub-millisecond, so we skip the cache
+    // for this one field and trust it for everything else.
+    const liveTotal = (db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number }).count;
+
+    return c.json({
+      total_packages: liveTotal,
+      total_weekly_downloads: stats.total_weekly_downloads,
+      total_monthly_downloads: stats.total_monthly_downloads,
+      average_growth: stats.average_growth,
+      last_sync: syncMetaRow?.value || null,
+      next_sync: nextSyncTime?.toISOString() || null,
+      sync_running: isSyncRunning(),
+      last_sync_mode: lastResult?.mode || null,
+    }, 200, { 'cache-control': API_CACHE_CONTROL });
   });
 
   /**
