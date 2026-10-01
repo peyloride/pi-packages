@@ -29,22 +29,25 @@ describe('stats.ts', () => {
       assert.equal(stats.total_packages, 2);
     });
 
-    it('sums weekly and monthly downloads (last 7 / 30 days)', () => {
+    it('sums weekly and monthly downloads (last 7 / 30 complete days)', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
+      // Today's row is partial at sync time; windows cover complete days only.
       const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
       db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', today, 100);
+      db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', yesterday, 25);
       const stats = recomputeStatsCache();
-      assert.equal(stats.total_weekly_downloads, 100);
-      assert.equal(stats.total_monthly_downloads, 100);
+      assert.equal(stats.total_weekly_downloads, 25);
+      assert.equal(stats.total_monthly_downloads, 25);
     });
 
     it('excludes downloads older than 30 days from the monthly total', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
-      const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
       const oldDate = new Date(Date.now() - 40 * 86400000).toISOString().split('T')[0];
-      db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', today, 50);
+      db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', yesterday, 50);
       db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', oldDate, 1000);
       const stats = recomputeStatsCache();
       assert.equal(stats.total_weekly_downloads, 50);
@@ -66,13 +69,13 @@ describe('stats.ts', () => {
     it('computes a positive Bayesian-smoothed average_growth when packages are growing', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
-      // this_week=700 (100/day×7), last_week=350 (50/day×7)
+      // this_week=700 (100/day×7 offsets 1-7), last_week=350 (50/day×7 offsets 8-14)
       // smoothed growth = (710/450)*100 - 100 ≈ 57.78
-      for (let i = 0; i < 7; i++) {
+      for (let i = 1; i <= 7; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 100);
       }
-      for (let i = 7; i < 14; i++) {
+      for (let i = 8; i <= 14; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 50);
       }
@@ -84,11 +87,11 @@ describe('stats.ts', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
       // this_week=350, last_week=700 → declining
-      for (let i = 0; i < 7; i++) {
+      for (let i = 1; i <= 7; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 50);
       }
-      for (let i = 7; i < 14; i++) {
+      for (let i = 8; i <= 14; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 100);
       }
@@ -100,7 +103,7 @@ describe('stats.ts', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
       // Only this-week data, no last-week baseline → AVG ignores the NULL
-      for (let i = 0; i < 7; i++) {
+      for (let i = 1; i <= 7; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 100);
       }

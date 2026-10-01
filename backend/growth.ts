@@ -38,6 +38,13 @@ export function recomputeGrowthCache(): void {
   ];
 
   for (const { column, days } of periods) {
+    // Both windows span exactly `days` complete calendar dates, excluding
+    // today (a partial day at sync time; including it skews current vs
+    // previous whenever the day's count is still accumulating):
+    //   current  = [now-days,   now-1]   (offsets 1..days)
+    //   previous = [now-2*days, now-days-1] (offsets days+1..2*days)
+    const curStart = `date('now', '-${days} days')`;
+    const curEnd = `date('now')`;
     const prevStart = `date('now', '-${days * 2} days')`;
     const prevEnd = `date('now', '-${days} days')`;
 
@@ -50,7 +57,7 @@ export function recomputeGrowthCache(): void {
           p.name,
           CASE
             WHEN COALESCE(SUM(CASE WHEN d.date >= ${prevStart} AND d.date < ${prevEnd} THEN d.downloads ELSE 0 END), 0) > 0
-            THEN ((COALESCE(SUM(CASE WHEN d.date >= date('now', '-${days} days') THEN d.downloads ELSE 0 END), 0) + ${k}) * 100.0 /
+            THEN ((COALESCE(SUM(CASE WHEN d.date >= ${curStart} AND d.date < ${curEnd} THEN d.downloads ELSE 0 END), 0) + ${k}) * 100.0 /
                   (COALESCE(SUM(CASE WHEN d.date >= ${prevStart} AND d.date < ${prevEnd} THEN d.downloads ELSE 0 END), 0) + ${k})) - 100
             ELSE NULL
           END as value

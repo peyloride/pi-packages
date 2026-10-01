@@ -38,16 +38,17 @@ export function recomputeStatsCache(): StatsCache {
   const totalPackages = (db.prepare('SELECT COUNT(*) as count FROM packages').get() as { count: number }).count;
 
   const weekly = (db.prepare(`
-    SELECT SUM(downloads) as total FROM daily_downloads WHERE date >= date('now', '-7 days')
+    SELECT SUM(downloads) as total FROM daily_downloads WHERE date >= date('now', '-7 days') AND date < date('now')
   `).get() as { total: number | null }).total || 0;
 
   const monthly = (db.prepare(`
-    SELECT SUM(downloads) as total FROM daily_downloads WHERE date >= date('now', '-30 days')
+    SELECT SUM(downloads) as total FROM daily_downloads WHERE date >= date('now', '-30 days') AND date < date('now')
   `).get() as { total: number | null }).total || 0;
 
   // Bayesian-smoothed growth so the ecosystem average is consistent with the
   // per-package growth_percent. Packages with no baseline (last_week = 0) are
   // excluded (AVG ignores the NULL); the k prior dampens small-baseline noise.
+  // Both windows span 7 complete days excluding today (partial at sync time).
   const avgGrowth = (db.prepare(`
     SELECT AVG(CASE WHEN last_week > 0
              THEN ((this_week + ${GROWTH_SMOOTHING_PRIOR}) * 100.0 /
@@ -56,7 +57,7 @@ export function recomputeStatsCache(): StatsCache {
            END) as avg
     FROM (
       SELECT
-        SUM(CASE WHEN date >= date('now', '-7 days') THEN downloads ELSE 0 END) as this_week,
+        SUM(CASE WHEN date >= date('now', '-7 days') AND date < date('now') THEN downloads ELSE 0 END) as this_week,
         SUM(CASE WHEN date >= date('now', '-14 days') AND date < date('now', '-7 days') THEN downloads ELSE 0 END) as last_week
       FROM daily_downloads
       GROUP BY package_name

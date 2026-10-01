@@ -93,31 +93,34 @@ export function recomputeEcosystemCache(): EcosystemCache {
   const active30 = (db.prepare(`
     SELECT COUNT(DISTINCT package_name) as c
     FROM daily_downloads
-    WHERE date >= date('now', '-30 days') AND downloads > 0
+    WHERE date >= date('now', '-30 days') AND date < date('now') AND downloads > 0
   `).get() as { c: number }).c;
 
-  // 1) Downloads series: daily sums for the last SERIES_DAYS days. Days with
-  // no records appear with downloads: 0 (zero-fill in JS, design D3).
+  // 1) Downloads series: daily sums for the last SERIES_DAYS complete days
+  // (excluding today, partial). Days with no records get downloads: 0.
+  // The JS zero-fill loop below must use the same [-59, -1] day offsets as
+  // this query or the two disagree on which dates the series covers.
   const seriesRows = db.prepare(`
     SELECT date, SUM(downloads) as total
     FROM daily_downloads
-    WHERE date >= date('now', '-${SERIES_DAYS} days')
+    WHERE date >= date('now', '-${SERIES_DAYS} days') AND date < date('now')
     GROUP BY date
   `).all() as Array<{ date: string; total: number | null }>;
 
   const totalsByDate = new Map(seriesRows.map((r) => [r.date, r.total || 0]));
   const downloadsSeries: EcosystemDay[] = [];
-  for (let i = SERIES_DAYS - 1; i >= 0; i--) {
+  for (let i = SERIES_DAYS; i >= 1; i--) {
     const d = toDateKey(new Date(Date.now() - i * 24 * 60 * 60 * 1000));
     downloadsSeries.push({ date: d, downloads: totalsByDate.get(d) || 0 });
   }
 
-  // 2) Top packages by 30-day downloads (with materialized weekly growth).
+  // 2) Top packages by 30 complete days of downloads (excluding today),
+  // with materialized weekly growth.
   const topPackages = db.prepare(`
     SELECT p.name, COALESCE(SUM(d.downloads), 0) as downloads, p.weekly_growth as growth
     FROM packages p
     LEFT JOIN daily_downloads d
-      ON d.package_name = p.name AND d.date >= date('now', '-30 days')
+      ON d.package_name = p.name AND d.date >= date('now', '-30 days') AND d.date < date('now')
     GROUP BY p.name, p.weekly_growth
     ORDER BY downloads DESC, p.name ASC
     LIMIT ?
@@ -127,12 +130,12 @@ export function recomputeEcosystemCache(): EcosystemCache {
     growth: r.growth === null || r.growth === undefined ? null : Math.round(r.growth * 10) / 10,
   }));
 
-  // 3) Per-package 30-day totals (only packages with at least one download in
-  // the window) for percentile picks.
+  // 3) Per-package 30-complete-day totals (only packages with at least one
+  // download in the window) for percentile picks.
   const perPackageRows = db.prepare(`
     SELECT d.package_name as name, SUM(d.downloads) as total
     FROM daily_downloads d
-    WHERE d.date >= date('now', '-30 days')
+    WHERE d.date >= date('now', '-30 days') AND d.date < date('now')
     GROUP BY d.package_name
   `).all() as Array<{ name: string; total: number }>;
 
@@ -173,7 +176,7 @@ export function recomputeEcosystemCache(): EcosystemCache {
   const publisherGroups = db.prepare(`
     SELECT p.publisher as publisher, p.github_url as github_url,
            COUNT(DISTINCT p.name) as packages,
-           COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) as downloads
+           COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') AND d.date < date('now') THEN d.downloads ELSE 0 END), 0) as downloads
     FROM packages p
     LEFT JOIN daily_downloads d ON d.package_name = p.name
     GROUP BY p.publisher, p.github_url

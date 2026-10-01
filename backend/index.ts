@@ -294,12 +294,18 @@ export function createApp(): Hono {
       let extraFilter = '';
       let havingPart = '';
 
+      // download period totals below: exactly N complete days excluding
+      // today (partial at sync time).
+      const periodWindow = `d.date >= date('now', '-${periodDays} days') AND d.date < date('now')`;
+      const window7 = `d.date >= date('now', '-7 days') AND d.date < date('now')`;
+      const window30 = `d.date >= date('now', '-30 days') AND d.date < date('now')`;
+
       switch (sort) {
         case 'trending':
           // Floor on absolute volume so tiny-baseline packages (1 -> 5 with
           // +400%) don't dominate the trending tab. The card still shows their
           // stats; they just don't rank on trending.
-          havingPart = `HAVING COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) >= ${TRENDING_MIN_DOWNLOADS[period]}`;
+          havingPart = `HAVING COALESCE(SUM(CASE WHEN ${periodWindow} THEN d.downloads ELSE 0 END), 0) >= ${TRENDING_MIN_DOWNLOADS[period]}`;
           orderBy = `ORDER BY growth_percent DESC NULLS LAST`;
           break;
         case 'new':
@@ -320,7 +326,7 @@ export function createApp(): Hono {
       // Composes with the trending HAVING by AND-ing onto it; when there is no
       // existing HAVING (non-trending sorts) it seeds the keyword itself.
       if (minDownloads > 0) {
-        const floor = `COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) >= ?`;
+        const floor = `COALESCE(SUM(CASE WHEN ${window30} THEN d.downloads ELSE 0 END), 0) >= ?`;
         havingPart = havingPart ? `${havingPart} AND ${floor}` : `HAVING ${floor}`;
         // Bind as a NUMBER (not string): SQLite compares INTEGER affinity
         // results against TEXT binds with type-ordering rules that sort all
@@ -381,9 +387,9 @@ export function createApp(): Hono {
           r.license as gh_license,
           r.archived as gh_archived,
           r.pushed_at as gh_pushed_at,
-          COALESCE(SUM(CASE WHEN d.date >= date('now', '-${periodDays} days') THEN d.downloads ELSE 0 END), 0) as period_downloads,
-          COALESCE(SUM(CASE WHEN d.date >= date('now', '-7 days') THEN d.downloads ELSE 0 END), 0) as weekly_downloads,
-          COALESCE(SUM(CASE WHEN d.date >= date('now', '-30 days') THEN d.downloads ELSE 0 END), 0) as monthly_downloads
+          COALESCE(SUM(CASE WHEN ${periodWindow} THEN d.downloads ELSE 0 END), 0) as period_downloads,
+          COALESCE(SUM(CASE WHEN ${window7} THEN d.downloads ELSE 0 END), 0) as weekly_downloads,
+          COALESCE(SUM(CASE WHEN ${window30} THEN d.downloads ELSE 0 END), 0) as monthly_downloads
         FROM packages p
         LEFT JOIN daily_downloads d ON p.name = d.package_name
         LEFT JOIN repo_meta r ON r.repo = p.github_repo
@@ -397,8 +403,8 @@ export function createApp(): Hono {
       const packages = db.prepare(query).all(...searchParams, limit, offset) as any[];
 
       // Batch-fetch sparkline data for all packages in ONE query (was N+1 — a
-      // separate `WHERE package_name = ?` per package). 7-day window, capped at
-      // 7 data points, grouped by package name.
+      // separate `WHERE package_name = ?` per package). Complete-day window
+      // excluding today (partial): exactly `sparklineDays` data points.
       const sparklineDays = Math.min(periodDays, 7);
       const sparklineMap = new Map<string, number[]>();
       if (packages.length > 0) {
@@ -406,7 +412,7 @@ export function createApp(): Hono {
         const placeholders = names.map(() => '?').join(',');
         const sparklineRows = db.prepare(
           `SELECT package_name, downloads FROM daily_downloads
-           WHERE date >= date('now', '-${sparklineDays} days')
+           WHERE date >= date('now', '-${sparklineDays} days') AND date < date('now')
            AND package_name IN (${placeholders})
            ORDER BY package_name, date ASC`,
         ).all(...names) as Array<{ package_name: string; downloads: number }>;
@@ -507,16 +513,24 @@ export function createApp(): Hono {
       const downloads = db.prepare(`
         SELECT date, downloads
         FROM daily_downloads
-        WHERE package_name = ? AND date >= date('now', '-30 days')
+        WHERE package_name = ? AND date >= date('now', '-30 days') AND date < date('now')
         ORDER BY date ASC
       `).all(name) as Array<{ date: string; downloads: number }>;
 
-      const now = Date.now();
+      // Same complete-day convention as the list endpoint (`>= now-N days,
+      // < today` on date strings): daily = yesterday, weekly = last 7
+      // complete days, monthly = last 30 complete days.
+      const todayKey = new Date().toISOString().split('T')[0];
+      const inWindow = (d: string, n: number): boolean => {
+        if (d >= todayKey) return false;
+        const cutoff = new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        return d >= cutoff;
+      };
       const dailyDownloads = downloads
-        .filter(d => new Date(d.date) >= new Date(now - 1 * 24 * 60 * 60 * 1000))
+        .filter(d => inWindow(d.date, 1))
         .reduce((sum, d) => sum + d.downloads, 0);
       const weeklyDownloads = downloads
-        .filter(d => new Date(d.date) >= new Date(now - 7 * 24 * 60 * 60 * 1000))
+        .filter(d => inWindow(d.date, 7))
         .reduce((sum, d) => sum + d.downloads, 0);
       const monthlyDownloads = downloads
         .reduce((sum, d) => sum + d.downloads, 0);

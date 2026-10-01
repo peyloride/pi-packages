@@ -64,11 +64,12 @@ describe('ecosystem.ts', () => {
   });
 
   describe('downloads_series', () => {
-    it('covers exactly 60 days, oldest → newest, zero-filled for sparse days', () => {
-      // Only 3 days of data (today, 30 days ago, 59 days ago); everything
-      // else should be zero-filled and present.
+    it('covers exactly 60 complete days, oldest → newest, zero-filled for sparse days', () => {
+      // Only 3 days of data (yesterday, 30 days ago, 59 days ago);
+      // everything else should be zero-filled and present. Today (offset 0)
+      // is partial at sync time and excluded from the series.
       seedPackage(db, 'pkg-a', {
-        downloadsPerDay: [100, 70, 5], // offsets 0, 1, 2
+        downloadsPerDay: [0, 100, 70, 5], // offsets 0, 1, 2, 3
       });
       db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', dayKey(30), 42);
       db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', dayKey(59), 9);
@@ -76,14 +77,15 @@ describe('ecosystem.ts', () => {
       const eco = recomputeEcosystemCache();
       const series = eco.downloads_series;
       assert.equal(series.length, 60);
-      assert.equal(series[0].date, dayKey(59));
-      assert.equal(series[59].date, dayKey(0));
+      assert.equal(series[0].date, dayKey(60));
+      assert.equal(series[59].date, dayKey(1));
 
       const totals: Record<string, number> = {};
       for (const d of series) totals[d.date] = d.downloads;
-      assert.equal(totals[dayKey(0)], 100);
+      assert.equal(totals[dayKey(1)], 100);
       assert.equal(totals[dayKey(30)], 42);
       assert.equal(totals[dayKey(59)], 9);
+      assert.ok(!(dayKey(0) in totals), 'today must be excluded (partial day)');
       // A sparse middle day is present with 0.
       assert.equal(totals[dayKey(40)], 0);
 
@@ -96,10 +98,12 @@ describe('ecosystem.ts', () => {
 
   describe('top_packages', () => {
     it('ranks by 30-day downloads descending, ties broken by name asc', () => {
-      seedPackage(db, 'pkg-hi', { downloadsPerDay: Array(5).fill(100) }); // 500
-      seedPackage(db, 'pkg-lo', { downloadsPerDay: Array(5).fill(10) });  // 50
-      seedPackage(db, 'pkg-tie-a', { downloadsPerDay: Array(2).fill(25) }); // 50
-      seedPackage(db, 'pkg-tie-b', { downloadsPerDay: Array(2).fill(25) }); // 50
+      // Seed ends yesterday (offset 1) so the seeded rows fall in the
+      // complete-day window; today is excluded.
+      seedPackage(db, 'pkg-hi', { downloadsPerDay: [0, ...Array(5).fill(100)] }); // 500
+      seedPackage(db, 'pkg-lo', { downloadsPerDay: [0, ...Array(5).fill(10)] });  // 50
+      seedPackage(db, 'pkg-tie-a', { downloadsPerDay: [0, ...Array(2).fill(25)] }); // 50
+      seedPackage(db, 'pkg-tie-b', { downloadsPerDay: [0, ...Array(2).fill(25)] }); // 50
 
       recomputeGrowthCache();
       const eco = recomputeEcosystemCache();
@@ -128,7 +132,7 @@ describe('ecosystem.ts', () => {
     it('computes p50/p90/p99 from packages with 30-day downloads', () => {
       // 10 packages with totals 1..10 → p50=5, p90=9, p99=9 (offset floors).
       for (let i = 1; i <= 10; i++) {
-        seedPackage(db, `pkg-${i}`, { downloadsPerDay: Array(i).fill(1) });
+        seedPackage(db, `pkg-${i}`, { downloadsPerDay: [0, ...Array(i).fill(1)] });
       }
       recomputeGrowthCache();
       const eco = recomputeEcosystemCache();
@@ -176,8 +180,9 @@ describe('ecosystem.ts', () => {
       // 'GitHub Actions' with a github_url resolves to the repo owner.
       seedPackage(db, 'pkg-gh-1', { publisher: 'GitHub Actions', githubUrl: 'https://github.com/owner-a/repo-1' });
       seedPackage(db, 'pkg-gh-2', { publisher: 'GitHub Actions', githubUrl: 'https://github.com/owner-a/repo-2' });
-      // Regular publisher with lots of downloads.
-      seedPackage(db, 'pkg-regular', { publisher: 'heavy', downloadsPerDay: Array(10).fill(50) });
+      // Regular publisher with lots of downloads (yesterday-based seed so the
+      // rows fall in the complete-day window).
+      seedPackage(db, 'pkg-regular', { publisher: 'heavy', downloadsPerDay: [0, ...Array(10).fill(50)] });
 
       recomputeGrowthCache();
       const eco = recomputeEcosystemCache();
@@ -212,7 +217,7 @@ describe('ecosystem.ts', () => {
 
   describe('cache persistence', () => {
     it('persists to sync_meta under ecosystem_cache and reads back the same object', () => {
-      seedPackage(db, 'pkg-a', { downloadsPerDay: [10, 10] });
+      seedPackage(db, 'pkg-a', { downloadsPerDay: [0, 10, 10] });
       const computed = recomputeEcosystemCache();
       const row = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get('ecosystem_cache') as { value: string } | undefined;
       assert.ok(row, 'expected ecosystem_cache row');

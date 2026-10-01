@@ -20,7 +20,8 @@ describe('index.ts API Routes', () => {
     db.prepare('DELETE FROM packages').run();
     db.prepare('DELETE FROM sync_meta').run();
 
-    // Seed: 2 packages, 14 days of downloads. pkg-a growing, pkg-b stable.
+    // Seed: 2 packages, 14 complete days of downloads (offsets 1-14).
+    // pkg-a growing (100/day this week, 50/day last), pkg-b stable.
     db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, publisher_display) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run('pkg-a', 'Package A description', '1.0.0', '["test","pi"]', 'testuser', 'https://github.com/test/pkg-a', 'https://npmjs.com/package/pkg-a', '2024-01-01', '2024-01-15', 'testuser');
     db.prepare(`INSERT INTO packages (name, description, version, keywords, publisher, github_url, npm_url, first_seen, last_publish, publisher_display) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -33,10 +34,10 @@ describe('index.ts API Routes', () => {
     db.prepare(`INSERT INTO repo_meta (repo, stars, forks, open_issues, license, archived, pushed_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run('test/pkg-a', 1234, 56, 7, 'MIT', 0, '2024-01-10T00:00:00Z', '2024-01-10T00:00:00Z');
 
-    for (let i = 0; i < 14; i++) {
+    for (let i = 1; i <= 14; i++) {
       const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
       // pkg-a growing: 100/day this week, 50/day last week
-      db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, i < 7 ? 100 : 50);
+      db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, i <= 7 ? 100 : 50);
       // pkg-b stable: 10/day throughout
       db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-b', d, 10);
     }
@@ -135,8 +136,10 @@ describe('index.ts API Routes', () => {
       const res = await app.request('/api/packages?sort=trending&period=weekly');
       assert.equal(res.status, 200);
       const body = (await res.json()) as any;
-      // pkg-a (50/day last week, 100/day this week → growing + above floor)
-      // pkg-b (10/day stable → below TRENDING_MIN_DOWNLOADS.weekly=50)
+      // pkg-a (50/day last week, 100/day this week → growing; 700 in the
+      // complete-day window, above TRENDING_MIN_DOWNLOADS.weekly=50)
+      // pkg-b (10/day stable → 70 in-window... still above the floor, but
+      // pkg-a must rank first by growth)
       assert.ok(body.packages.length >= 1);
       assert.ok(body.packages.some((p: any) => p.name === 'pkg-a'));
     });
@@ -300,7 +303,8 @@ describe('index.ts API Routes', () => {
       const res = await app.request('/api/packages?sort=trending&period=weekly&min_downloads=500');
       assert.equal(res.status, 200);
       const body = (await res.json()) as any;
-      // Trending floor (weekly >= 50) + 30d >= 500: pkg-a qualifies, pkg-b not.
+      // Trending floor (weekly >= 50) + 30d >= 500: pkg-a qualifies
+      // (700 weekly / 1050 monthly in complete days), pkg-b not (70 / 140).
       assert.ok(body.packages.some((p: any) => p.name === 'pkg-a'));
       assert.ok(!body.packages.some((p: any) => p.name === 'pkg-b'));
     });
@@ -411,8 +415,15 @@ describe('index.ts API Routes', () => {
       assert.ok(Array.isArray(body.download_history));
       assert.ok(body.download_history.length > 0);
       assert.ok(Array.isArray(body.sparkline));
-      assert.ok(body.weekly_downloads >= 0);
-      assert.ok(body.monthly_downloads >= 0);
+      // Seeded offsets 1-14: pkg-a = 100/day×7 + 50/day×7
+      assert.equal(body.weekly_downloads, 700);
+      assert.equal(body.daily_downloads, 100);
+      assert.equal(body.monthly_downloads, 1050);
+      // List and detail agree on the same complete-day windows.
+      const listRes = await app.request('/api/packages?sort=popular&period=weekly');
+      const listBody = (await listRes.json()) as any;
+      const listed = listBody.packages.find((p: any) => p.name === 'pkg-a');
+      assert.equal(listed.weekly_downloads, body.weekly_downloads);
     });
 
     it('resolves GitHub Actions publisher to the repo owner', async () => {
