@@ -186,8 +186,11 @@ function nextFixedTime(expression: string): Date | null {
     if (schedule.month !== '*' && !schedule.month.includes(day.getUTCMonth() + 1)) continue;
     if (schedule.dayOfWeek !== '*' && !schedule.dayOfWeek.includes(day.getUTCDay())) continue;
 
-    for (const hour of schedule.hour) {
-      for (const minute of schedule.minute) {
+    // Iterate hour/minute candidates in ascending order so the first future
+    // match is the SOONEST (declaration order like "0 18,6 * * *" would
+    // otherwise report 18:00 when 06:00 is earlier and still ahead).
+    for (const hour of [...schedule.hour].sort((a, b) => a - b)) {
+      for (const minute of [...schedule.minute].sort((a, b) => a - b)) {
         const candidate = new Date(day);
         candidate.setUTCHours(hour, minute, 0, 0);
         if (candidate > now) return candidate;
