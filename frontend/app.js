@@ -378,9 +378,21 @@ async function loadPackages() {
     // packages with insufficient download history).
     
     if (data.packages.length === 0) {
+      // Page past the end (e.g. ?p=999, or the total shrank): clamp back to
+      // the last real page instead of stranding the user on an empty view —
+      // only when the total is non-zero (a genuine empty result should show
+      // the empty state).
+      const total = data.pagination?.total || 0;
+      if (total > 0 && currentOffset > 0) {
+        const lastPage = Math.max(1, Math.ceil(total / limit));
+        currentOffset = (lastPage - 1) * limit;
+        syncUrl('replace');
+        loadPackages();
+        return;
+      }
       packagesEl.innerHTML = '';
       const hasSearch = currentSearch.length > 0;
-      const suggestions = hasSearch 
+      const suggestions = hasSearch
         ? 'Try searching for something broader, like "tool" or "util"'
         : 'Try a different filter or check back later for new packages';
       packagesEl.appendChild(EmptyState({
