@@ -231,9 +231,11 @@ export async function cronTick(now: Date): Promise<void> {
     console.log('[Cron] Starting scheduled FULL sync...');
     try {
       lastSyncResult = await runFullSync();
+      // Order matters: recomputeGrowthCache first — the ecosystem blob
+      // embeds packages.weekly_growth and would otherwise be one sync stale.
+      recomputeGrowthCache();
       recomputeStatsCache();
       recomputeEcosystemCache();
-      recomputeGrowthCache();
       lastFullRun = currentRun;
       lastIncrementalRun = currentRun;
       syncVersion++;
@@ -251,9 +253,11 @@ export async function cronTick(now: Date): Promise<void> {
     console.log('[Cron] Starting scheduled incremental sync...');
     try {
       lastSyncResult = await runIncrementalSync();
+      // Order matters: recomputeGrowthCache first — the ecosystem blob
+      // embeds packages.weekly_growth and would otherwise be one sync stale.
+      recomputeGrowthCache();
       recomputeStatsCache();
       recomputeEcosystemCache();
-      recomputeGrowthCache();
       lastIncrementalRun = currentRun;
       syncVersion++;
       console.log('[Cron] Incremental sync completed');
