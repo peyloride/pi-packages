@@ -135,7 +135,7 @@ function openDetail(name, hashMode = 'push') {
 
   // Update hash (replaceState keeps the current list entry; pushState for the
   // card click creates a new entry so Back closes the modal).
-  const target = `${location.pathname}${location.search}#/pkg/${encodeURIComponent(name)}`;
+  const target = `${location.pathname}${location.search}${buildPackageHash(name)}`;
   if (hashMode === 'push') {
     history.pushState({ view: 'detail' }, '', target);
   } else {

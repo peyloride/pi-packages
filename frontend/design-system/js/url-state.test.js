@@ -184,4 +184,15 @@ describe('parsePackageHash / buildPackageHash', () => {
     assert.equal(buildPackageHash('pi-dgoal'), '#/pkg/pi-dgoal');
     assert.equal(parsePackageHash(buildPackageHash('@scope/pkg')), '@scope/pkg');
   });
+
+  it('decodes percent-encoded scoped names from deep links', () => {
+    // What app.js writes: '#/pkg/' + encodeURIComponent('@scope/name')
+    assert.equal(parsePackageHash('#/pkg/%40scope%2Fname'), '@scope/name');
+    // Round-trip through the builder must decode back exactly.
+    assert.equal(parsePackageHash(buildPackageHash('@scope/name')), '@scope/name');
+  });
+
+  it('passes through malformed %-sequences instead of throwing', () => {
+    assert.equal(parsePackageHash('#/pkg/%ZZ'), '%ZZ');
+  });
 });

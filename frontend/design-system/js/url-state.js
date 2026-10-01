@@ -137,26 +137,31 @@ export function buildUrlState(state = {}) {
 
 /**
  * Parse a hash (e.g. location.hash) into a package name, or null.
- * Accepts "#/pkg/<name>" and "#/pkg/<name>" with trailing junk tolerated
- * but the name itself is taken literally (no URL-decoding beyond the
- * standard decodeURIComponent performed by URLSearchParams-style handling).
+ * Accepts "#/pkg/<name>" where <name> is percent-encoded (see
+ * buildPackageHash) and decodes it back to the raw package name.
  *
- * @param {string|undefined|null} hash - e.g. "#/pkg/pi-dgoal"
+ * @param {string|undefined|null} hash - e.g. "#/pkg/%40scope%2Fname"
  * @returns {string|null} Package name to deep-link, or null if not a package hash
  */
 export function parsePackageHash(hash = '') {
   const h = String(hash || '').trim();
   const m = h.match(/^#\/pkg\/(.+)$/);
   if (!m) return null;
-  const name = m[1];
-  return name || null;
+  const raw = m[1];
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw; // malformed %-sequence — pass through, let the API 404
+  }
 }
 
 /**
- * Build a package detail hash from a package name.
+ * Build a package detail hash from a package name. Encodes so scoped names
+ * (`@scope/name`) survive the hash round-trip; parsePackageHash decodes.
  * @param {string} name
- * @returns {string} e.g. "#/pkg/pi-dgoal"
+ * @returns {string} e.g. "#/pkg/%40scope%2Fname"
  */
 export function buildPackageHash(name) {
-  return `#/pkg/${name}`;
+  return `#/pkg/${encodeURIComponent(name)}`;
 }
