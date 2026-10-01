@@ -143,6 +143,33 @@ describe('repoMeta.ts', () => {
       assert.deepEqual(seen.map(u => u.split('/repos/')[1]), ['owner/z']);
     });
 
+    it('fetches a monorepo shared by several packages once per run', async () => {
+      const db = getDb();
+      // Three packages, all pointing at the same repo, plus an unrelated one.
+      seedPackage('mono/repo', 'pkg-mono-a');
+      seedPackage('mono/repo', 'pkg-mono-b');
+      seedPackage('mono/repo', 'pkg-mono-c');
+      seedPackage('other/repo');
+      setBudget(2);
+
+      const seen: string[] = [];
+      const fetchFn: any = async (url: string) => {
+        seen.push(url);
+        return okResponse(makeRepoPayload());
+      };
+
+      const result = await syncRepoMeta(fetchFn);
+
+      // Both DISTINCT repos fetched, no duplicates — the shared repo must not
+      // consume the budget three times.
+      assert.deepEqual(
+        seen.map(u => u.split('/repos/')[1]).sort(),
+        ['mono/repo', 'other/repo'],
+      );
+      assert.equal(result.fetched, 2);
+      assert.equal((db.prepare('SELECT COUNT(*) as c FROM repo_meta').get() as { c: number }).c, 2);
+    });
+
     it('stores nulls + fetched_at on 404 and honors the retry cooldown', async () => {
       const db = getDb();
       seedPackage('gone/r');

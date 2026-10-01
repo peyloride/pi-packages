@@ -95,6 +95,9 @@ function parseRepoPayload(body: any): {
  *   - only repos that still have a matching package row (packages.github_repo)
  */
 function selectReposToFetch(db: ReturnType<typeof getDb>, budget: number): string[] {
+  // GROUP BY repo: several packages can share one repo (monorepo publishers);
+  // without the group the same repo would be selected once per package and
+  // burn the run's budget on duplicate API calls.
   const rows = db.prepare(`
     SELECT p.github_repo AS repo
     FROM packages p
@@ -105,10 +108,11 @@ function selectReposToFetch(db: ReturnType<typeof getDb>, budget: number): strin
         OR (rm.stars IS NULL AND rm.fetched_at < datetime('now', '-${REPO_RETRY_AFTER_DAYS} days'))
         OR rm.stars IS NOT NULL
       )
+    GROUP BY p.github_repo
     ORDER BY
       CASE WHEN rm.repo IS NULL THEN 0 ELSE 1 END,
-      rm.fetched_at ASC,
-      p.name ASC
+      MIN(rm.fetched_at) ASC,
+      MIN(p.name) ASC
     LIMIT ?
   `).all(budget) as Array<{ repo: string }>;
   return rows.map(r => r.repo);
