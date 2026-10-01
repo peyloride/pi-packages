@@ -193,10 +193,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// Handle for cancelling the pending search debounce from other handlers
+// (popstate, sort, period) — wired up inside setupSearch().
+let pendingSearchCancel = null;
+
+// Cancel any pending search-debounce callback. Every path that changes list
+// state outside the search input (clear button, popstate, sort, period) must
+// call this, or the late timer re-applies a stale search over the newer state.
+function cancelPendingSearch() {
+  if (pendingSearchCancel) {
+    pendingSearchCancel();
+    pendingSearchCancel = null;
+  }
+}
+
 function setupSearch() {
   let debounceTimer;
   // Local mirror of the raw input value (~not-yet-trimmed) for URL sync.
   let lastRaw = '';
+  pendingSearchCancel = () => clearTimeout(debounceTimer);
 
   searchInput.addEventListener('input', (e) => {
     const value = e.target.value.trim();
@@ -218,6 +233,7 @@ function setupSearch() {
 
   // Clear-search action from EmptyState
   const clearSearch = () => {
+    cancelPendingSearch();
     searchInput.value = '';
     lastRaw = '';
     currentSearch = '';
@@ -241,6 +257,7 @@ function setupSortFilters() {
   sortFilters.forEach(filter => {
     filter.addEventListener('click', () => {
       if (filter.dataset.sort === currentSort) return;
+      cancelPendingSearch();
       sortFilters.forEach(f => f.classList.remove('active'));
       filter.classList.add('active');
       currentSort = filter.dataset.sort;
@@ -255,6 +272,7 @@ function setupPeriodButtons() {
   periodButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       if (btn.dataset.period === currentPeriod) return;
+      cancelPendingSearch();
       periodButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentPeriod = btn.dataset.period;
@@ -270,6 +288,7 @@ function setupEventListeners() {
   window.retryLoad = () => loadPackages();
 
   window.addEventListener('popstate', () => {
+    cancelPendingSearch();
     applyStateFromUrl();
 
     const pkgName = parsePackageHash(location.hash);
