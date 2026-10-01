@@ -174,10 +174,24 @@ describe('growth.ts', () => {
     it('returns true after recomputeGrowthCache runs on a package with baseline data', () => {
       const db = getDb();
       db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-a', '1.0.0');
-      for (let i = 0; i < 14; i++) {
+      for (let i = 1; i <= 14; i++) {
         const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
         db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-a', d, 10);
       }
+      recomputeGrowthCache();
+      assert.equal(growthCacheExists(), true);
+    });
+
+    it('returns true when columns are populated even if some rows are NULL', () => {
+      // A mix of computed and NULL rows (packages without baseline data) is
+      // normal after any sync — the cache exists.
+      const db = getDb();
+      db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-with-data', '1.0.0');
+      for (let i = 1; i <= 14; i++) {
+        const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+        db.prepare('INSERT INTO daily_downloads (package_name, date, downloads) VALUES (?, ?, ?)').run('pkg-with-data', d, 10);
+      }
+      db.prepare('INSERT INTO packages (name, version) VALUES (?, ?)').run('pkg-without-data', '1.0.0');
       recomputeGrowthCache();
       assert.equal(growthCacheExists(), true);
     });

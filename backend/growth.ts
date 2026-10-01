@@ -71,13 +71,21 @@ export function recomputeGrowthCache(): void {
 }
 
 /**
- * True if any package is missing materialized growth (cold start after the
- * migration add). Used at boot to decide whether to run recomputeGrowthCache().
+ * True if the materialized growth columns exist and are populated for at
+ * least one package. Used at boot to decide whether to run
+ * recomputeGrowthCache().
  */
 export function growthCacheExists(): boolean {
   const db = getDb();
+  // Check column presence via PRAGMA, not row values: a DB where every
+  // package happens to have NULL growth (e.g. no baseline data yet — the
+  // common state right after the first sync with a fresh registry) would
+  // otherwise report "missing" and force a full recompute on every boot.
+  const cols = db.prepare('PRAGMA table_info(packages)').all() as Array<{ name: string }>;
+  const hasColumn = cols.some((c) => c.name === 'weekly_growth');
+  if (!hasColumn) return false;
   const row = db.prepare(
-    `SELECT EXISTS(SELECT 1 FROM packages WHERE weekly_growth IS NOT NULL LIMIT 1) as has`,
-  ).get() as { has: number };
-  return row.has === 1;
+    `SELECT COUNT(*) as count FROM packages WHERE weekly_growth IS NOT NULL`,
+  ).get() as { count: number };
+  return row.count > 0;
 }
