@@ -310,11 +310,17 @@ function setupStatsTab() {
   });
 }
 
+// Monotonic counter for loadPackages/loadEcosystem responses. Each call
+// captures its value and bails if a newer call has started — an older, slower
+// response must never overwrite a newer render (URL/pager/list desync).
+let loadSeq = 0;
+
 // Load packages from API
 async function loadPackages() {
+  const seq = ++loadSeq;
   packagesEl.innerHTML = '';
   packagesEl.appendChild(LoadingState({ message: 'Loading packages...' }));
-  
+
   try {
     const params = new URLSearchParams({
       sort: currentSort,
@@ -322,7 +328,7 @@ async function loadPackages() {
       limit: limit.toString(),
       offset: currentOffset.toString(),
     });
-    
+
     if (currentSearch) {
       params.append('search', currentSearch);
     }
@@ -332,14 +338,16 @@ async function loadPackages() {
     if (currentMinDownloads > 0) {
       params.append('min_downloads', String(currentMinDownloads));
     }
-    
+
     const response = await fetch(`/api/packages?${params}`);
-    
+    if (seq !== loadSeq) return; // superseded by a newer load
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    
+
     const data = await response.json();
+    if (seq !== loadSeq) return; // superseded by a newer load
     
     totalCount = data.pagination?.total || data.packages.length;
     // NOTE: `totalCountEl` (the badge in the topbar) is intentionally NOT
@@ -378,6 +386,7 @@ async function loadPackages() {
     renderPagination();
     
   } catch (err) {
+    if (seq !== loadSeq) return; // superseded by a newer load
     console.error('Failed to load packages:', err);
     packagesEl.innerHTML = '';
     packagesEl.appendChild(ErrorState({
@@ -552,15 +561,19 @@ setInterval(loadStats, 60_000);
 
 async function loadEcosystem() {
   if (!statsViewEl) return;
+  const seq = ++loadSeq;
   statsViewEl.innerHTML = '';
   statsViewEl.appendChild(LoadingState({ message: 'Loading ecosystem stats...' }));
 
   try {
     const response = await fetch('/api/ecosystem');
+    if (seq !== loadSeq) return; // superseded by a newer load
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (seq !== loadSeq) return; // superseded by a newer load
     renderEcosystem(data);
   } catch (err) {
+    if (seq !== loadSeq) return; // superseded by a newer load
     console.error('Failed to load ecosystem stats:', err);
     statsViewEl.innerHTML = '';
     statsViewEl.appendChild(ErrorState({
