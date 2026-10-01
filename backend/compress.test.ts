@@ -24,6 +24,11 @@ function makeApp(): Hono {
     c.header('ETag', '"abc123"');
     return c.text(BIG);
   });
+  // serveStatic-style handler: sets Content-Length on the original response.
+  app.get('/content-length', (c) => {
+    const body = c.text(BIG);
+    return new Response(body.body, { status: 200, headers: { 'Content-Type': 'text/plain', 'Content-Length': String(BIG.length) } });
+  });
   return app;
 }
 
@@ -119,6 +124,20 @@ describe('compress.ts', () => {
   it('supports wildcard Accept-Encoding (*) and prefers brotli', async () => {
     const res = await app.request('/text', { headers: { 'Accept-Encoding': '*' } });
     assert.equal(res.headers.get('Content-Encoding'), 'br');
+  });
+
+  it('does not resurrect the pre-compression Content-Length', async () => {
+    // A serveStatic-style handler sets Content-Length for the uncompressed
+    // body; Hono's c.res setter re-copies original headers, so the delete in
+    // the middleware was undone and the compressed body shipped with the
+    // uncompressed length (truncated/hung responses).
+    const res = await app.request('/content-length', { headers: { 'Accept-Encoding': 'gzip' } });
+    assert.equal(res.headers.get('Content-Encoding'), 'gzip');
+    const cl = res.headers.get('Content-Length');
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (cl !== null) {
+      assert.equal(Number(cl), buf.length, `Content-Length ${cl} != actual body ${buf.length} bytes`);
+    }
   });
 
   it('removes Content-Length and sets Content-Encoding when compressing', async () => {

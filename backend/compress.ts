@@ -134,5 +134,11 @@ export function compress() {
       c.header('ETag', `W/${etag}`, { append: false });
     }
     c.header('Vary', 'Accept-Encoding', { append: true });
+    // Same resurrection problem for Content-Length: the delete on newHeaders
+    // above is undone by the setter re-copying the original headers, so a
+    // compressed 40-byte body could ship with the uncompressed length
+    // (truncated/hung responses downstream). c.header() with an undefined
+    // value deletes the header.
+    c.header('Content-Length', undefined, { append: false });
   };
 }
