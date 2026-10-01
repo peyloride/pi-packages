@@ -650,6 +650,14 @@ describe('index.ts API Routes', () => {
       const res = await app.request('/index.html');
       assert.equal(res.status, 200);
     });
+
+    it('returns 404 JSON (not 200 HTML) for unknown /api/* paths', async () => {
+      const res = await app.request('/api/typo');
+      assert.equal(res.status, 404);
+      assert.ok(res.headers.get('content-type')?.includes('application/json'));
+      const body = (await res.json()) as any;
+      assert.equal(body.error, 'Not found');
+    });
   });
 
   // ===========================================================================

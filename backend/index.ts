@@ -687,8 +687,13 @@ export function createApp(): Hono {
   app.use('/*', serveStatic({ root: FRONTEND_DIR }));
 
   // SPA fallback: unknown routes serve index.html so client-side routing works.
-  // Uses the stamped cache (no per-request disk read).
+  // Uses the stamped cache (no per-request disk read). Unknown /api/* paths
+  // get 404 JSON instead — API consumers expect JSON errors, and serving HTML
+  // with 200 makes fetch().json() fail opaquely.
   app.get('*', async (c) => {
+    if (c.req.path.startsWith('/api/')) {
+      return c.json({ error: 'Not found' }, 404);
+    }
     const asset = assetCache.get('/index.html');
     return new Response(asset?.content ?? '', {
       status: 200,
