@@ -330,7 +330,8 @@ export function openPackageDetailModal(options = {}) {
       chartWrap.className = 'modal-chart';
       const chartTitle = document.createElement('h3');
       chartTitle.className = 'modal-chart-title';
-      chartTitle.textContent = 'Downloads (60 days)';
+      // The detail API returns 30 days of history (see /api/packages/:name).
+      chartTitle.textContent = 'Downloads (30 days)';
       chartWrap.appendChild(chartTitle);
       renderBars(chartWrap, d.download_history.map((p) => ({
         date: p.date,
