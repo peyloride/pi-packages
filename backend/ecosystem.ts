@@ -185,24 +185,28 @@ export function recomputeEcosystemCache(): EcosystemCache {
   // Aggregation by DISPLAY publisher (after resolvePublisher). Two raw
   // publishers mapping to the same display name (e.g. 'GitHub Actions' and a
   // repo-owner override) merge here deliberately, so counts stay consistent
-  // with the card view.
-  const displayGroups = new Map<string, { packages: number; downloads: number }>();
+  // with the card view. The grouping key is case-folded to match the
+  // /api/packages publisher filter (publisher_display = ? COLLATE NOCASE) —
+  // case-sensitive keys split one publisher into several rows whose counts
+  // never matched the click-through list.
+  const displayGroups = new Map<string, { key: string; display: string; packages: number; downloads: number }>();
   for (const g of publisherGroups) {
     const { publisher } = resolvePublisher(g.publisher, g.github_url);
-    const key = publisher ?? '(unknown)';
-    const cur = displayGroups.get(key) || { packages: 0, downloads: 0 };
+    const display = publisher ?? '(unknown)';
+    const key = display.toLowerCase();
+    const cur = displayGroups.get(key) || { key, display, packages: 0, downloads: 0 };
     cur.packages += g.packages;
     cur.downloads += g.downloads;
     displayGroups.set(key, cur);
   }
 
-  const byPackages = [...displayGroups.entries()]
-    .map(([publisher, v]) => ({ publisher, packages: v.packages, downloads: v.downloads }))
+  const byPackages = [...displayGroups.values()]
+    .map(({ display, packages, downloads }) => ({ publisher: display, packages, downloads }))
     .sort((a, b) => b.packages - a.packages || b.downloads - a.downloads || a.publisher.localeCompare(b.publisher))
     .slice(0, TOP_N);
 
-  const byDownloads = [...displayGroups.entries()]
-    .map(([publisher, v]) => ({ publisher, packages: v.packages, downloads: v.downloads }))
+  const byDownloads = [...displayGroups.values()]
+    .map(({ display, packages, downloads }) => ({ publisher: display, packages, downloads }))
     .sort((a, b) => b.downloads - a.downloads || b.packages - a.packages || a.publisher.localeCompare(b.publisher))
     .slice(0, TOP_N);
 

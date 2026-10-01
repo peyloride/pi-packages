@@ -213,6 +213,20 @@ describe('ecosystem.ts', () => {
       const eco = recomputeEcosystemCache();
       assert.ok(eco.top_publishers.by_packages.some((p) => p.publisher === '(unknown)'));
     });
+
+    it('merges publishers differing only in URL case into one group', () => {
+      // The card filter matches publisher_display = ? COLLATE NOCASE, so
+      // case-sensitive grouping here would report split counts that never
+      // match the click-through list. 'GitHub Actions' resolves to the URL's
+      // owner, so two Actions-published packages with differently-cased
+      // owner paths must merge.
+      seedPackage(db, 'pkg-case-a', { publisher: 'GitHub Actions', githubUrl: 'https://github.com/MattDevy/repo-a' });
+      seedPackage(db, 'pkg-case-b', { publisher: 'GitHub Actions', githubUrl: 'https://github.com/mattdevy/repo-b' });
+      const eco = recomputeEcosystemCache();
+      const mattGroups = eco.top_publishers.by_packages.filter((p) => p.publisher.toLowerCase() === 'mattdevy');
+      assert.equal(mattGroups.length, 1, 'one display publisher, not two');
+      assert.equal(mattGroups[0].packages, 2);
+    });
   });
 
   describe('cache persistence', () => {
