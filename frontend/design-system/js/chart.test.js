@@ -76,6 +76,23 @@ describe('renderBars', () => {
     const svg = renderBars(container, [{ date: '2026-06-01' }]);
     assert.equal(svg.children[0].attrs.title, '2026-06-01: 0 downloads');
   });
+
+  it('lays bars out across the full viewBox without overlap (60 days)', () => {
+    const container = new FakeEl('div');
+    const data = Array.from({ length: 60 }, (_, i) => ({ date: '2026-06-01', downloads: 10 }));
+    const svg = renderBars(container, data, { height: 120 });
+    const rects = svg.children;
+    assert.equal(rects.length, 60);
+    // viewBox width equals the bar count; each bar must occupy exactly its
+    // own 1-unit slot: last bar ends at the viewBox edge, none overlap.
+    const last = rects[59];
+    assert.ok(Number(last.attrs.x) + Number(last.attrs.width) <= 60,
+      `last bar ends at ${Number(last.attrs.x) + Number(last.attrs.width)}, viewBox edge is 60`);
+    for (let i = 1; i < rects.length; i++) {
+      const prevEnd = Number(rects[i - 1].attrs.x) + Number(rects[i - 1].attrs.width);
+      assert.ok(Number(rects[i].attrs.x) >= prevEnd, `bar ${i} overlaps its predecessor`);
+    }
+  });
 });
 
 // Sanity: the modal relies on the XSS helpers — keep the guard visible here.

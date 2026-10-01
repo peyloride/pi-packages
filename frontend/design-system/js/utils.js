@@ -218,6 +218,9 @@ export function renderBars(container, data, options = {}) {
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('width', '100%');
   svg.setAttribute('height', String(height));
+  // viewBox width = number of bars: each bar occupies a 1-unit slot, so
+  // bar x/width math stays in simple units and 'none' aspect stretches
+  // the slot uniformly to the container width.
   svg.setAttribute('viewBox', `0 0 ${Math.max(values.length, 1)} ${height}`);
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.setAttribute('role', 'img');
@@ -229,14 +232,17 @@ export function renderBars(container, data, options = {}) {
     return svg;
   }
 
-  const slot = 1 / n;
+  // One unit per bar; the gap is a fraction of the slot so bars never
+  // overlap and never shrink to zero on dense series (60 days).
+  const slot = 1;
+  const gap = Math.min(barGap / 100, slot * 0.5);
   for (let i = 0; i < n; i++) {
     const v = values[i];
     const barHeight = max > 0 ? Math.max(v / max, 0.01) : 0.01;
     const rect = document.createElementNS(ns, 'rect');
     rect.setAttribute('x', String(i * slot));
     rect.setAttribute('y', String(height * (1 - barHeight)));
-    rect.setAttribute('width', String(Math.max(slot - barGap / 100, 0.02)));
+    rect.setAttribute('width', String(slot - gap));
     rect.setAttribute('height', String(height * barHeight));
     // Tooltip: yyyy-mm-dd + formatted count
     const point = data[i];
