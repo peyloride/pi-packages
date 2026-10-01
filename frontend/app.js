@@ -244,9 +244,13 @@ function setupSearch() {
   };
   window.clearSearch = clearSearch;
 
-  // Keyboard shortcut: / to focus search (not while a modal button is focused)
+  // Keyboard shortcut: / to focus search (not while a modal button is
+  // focused, and not while the detail modal is open — focusing search behind
+  // the overlay would break the modal's focus trap and fire a list reload
+  // the user can't see).
   document.addEventListener('keydown', (e) => {
-    if (e.key === '/' && document.activeElement !== searchInput && document.activeElement?.tagName !== 'BUTTON') {
+    const modalOpen = Boolean(document.querySelector('.modal-overlay'));
+    if (e.key === '/' && !modalOpen && document.activeElement !== searchInput && document.activeElement?.tagName !== 'BUTTON') {
       e.preventDefault();
       searchInput.focus();
     }
