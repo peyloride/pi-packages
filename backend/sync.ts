@@ -450,8 +450,16 @@ export async function fetchDownloadsBatched(
  */
 export function normalizeGithubRepo(githubUrl: string | null | undefined): string | null {
   if (!githubUrl) return null;
-  const cleaned = githubUrl.replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/$/, '');
-  const m = cleaned.match(/github\.com\/([^/?#]+)\/([^/?#]+)/i);
+  // Strip in an order-safe way: trailing slash first, then .git suffix, so
+  // "https://github.com/owner/repo.git/" ends up as "owner/repo" (stripping
+  // .git before the slash left "owner/repo.git").
+  const cleaned = githubUrl
+    .replace(/^git\+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  // [/:] also matches scp-style URLs (git@github.com:owner/repo.git).
+  const m = cleaned.match(/github\.com[/:]([^/?#]+)\/([^/?#]+)/i);
   if (!m) return null;
   return `${m[1].toLowerCase()}/${m[2].toLowerCase()}`;
 }

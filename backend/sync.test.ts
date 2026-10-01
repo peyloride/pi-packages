@@ -206,6 +206,28 @@ describe('sync.ts', () => {
     });
   });
 
+  describe('normalizeGithubRepo', () => {
+    it('parses https, git+https, .git suffix, and trailing slash', async () => {
+      const { normalizeGithubRepo } = await import('./sync');
+      assert.equal(normalizeGithubRepo('https://github.com/Owner/Repo'), 'owner/repo');
+      assert.equal(normalizeGithubRepo('git+https://github.com/owner/repo.git'), 'owner/repo');
+      assert.equal(normalizeGithubRepo('https://github.com/owner/repo/'), 'owner/repo');
+      // Regression: .git was stripped before the trailing slash, leaving
+      // "owner/repo.git" as the key.
+      assert.equal(normalizeGithubRepo('https://github.com/owner/repo.git/'), 'owner/repo');
+    });
+
+    it('parses scp-style URLs (git@github.com:owner/repo.git)', async () => {
+      const { normalizeGithubRepo } = await import('./sync');
+      // Regression: the regex required a '/' after github.com, so the scp
+      // form left github_repo NULL and repo_meta never joined.
+      assert.equal(normalizeGithubRepo('git@github.com:owner/repo.git'), 'owner/repo');
+      assert.equal(normalizeGithubRepo('git@github.com:owner/repo'), 'owner/repo');
+      assert.equal(normalizeGithubRepo('ssh://git@github.com/owner/repo.git'), 'owner/repo');
+      assert.equal(normalizeGithubRepo('https://gitlab.com/owner/repo'), null);
+    });
+  });
+
   describe('upsertPackage', () => {
     it('should insert package into database', () => {
       const pkgResult = {

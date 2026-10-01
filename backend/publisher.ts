@@ -23,8 +23,9 @@ export function resolvePublisher(
     return { publisher, publisher_raw: raw };
   }
   if (githubUrl) {
-    const cleaned = githubUrl.replace(/^git\+/, '').replace(/\.git$/, '');
-    const m = cleaned.match(/github\.com\/([^/]+)/i);
+    const cleaned = githubUrl.replace(/^git\+/, '').replace(/\.git$/i, '');
+    // [/:] also matches scp-style URLs (git@github.com:owner/repo.git).
+    const m = cleaned.match(/github\.com[/:]([^/]+)/i);
     if (m && m[1] && m[1].toLowerCase() !== 'github') {
       return { publisher: m[1], publisher_raw: raw };
     }
