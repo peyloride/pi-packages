@@ -103,7 +103,11 @@ function createResponseCache() {
   const cache = new Map<string, { body: string; status: number; storedAt: number }>();
 
   function key(parts: string[]): string {
-    return `${getSyncVersion()}:${parts.join('|')}`;
+    // JSON-serialize the parts: join('|') collided when free-form inputs
+    // (search, publisher) contained '|' — search=a&publisher=b|c and
+    // search=a|b&publisher=c produced the same key and served each other's
+    // cached body.
+    return `${getSyncVersion()}:${JSON.stringify(parts)}`;
   }
   function get(k: string): { body: string; status: number } | null {
     const hit = cache.get(k);
