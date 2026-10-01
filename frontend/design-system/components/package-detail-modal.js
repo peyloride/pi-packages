@@ -126,7 +126,9 @@ export function openPackageDetailModal(options = {}) {
       body.appendChild(stateMessage({
         className: 'modal-empty',
         title: 'Package not found',
-        message: `No package named "${escapeHtml(name)}" exists in the registry index.`,
+        // stateMessage renders via textContent — no escapeHtml here (it
+        // would double-escape and display "&amp;" for "&").
+        message: `No package named "${name}" exists in the registry index.`,
       }));
       return;
     }
@@ -189,7 +191,7 @@ export function openPackageDetailModal(options = {}) {
     if (github.license) {
       const chip = document.createElement('span');
       chip.className = 'license-chip';
-      chip.textContent = escapeHtml(github.license);
+      chip.textContent = github.license; // textContent — no escape needed
       strip.appendChild(chip);
     }
     if (github.archived) {
@@ -232,7 +234,7 @@ export function openPackageDetailModal(options = {}) {
       meta.appendChild(dd);
     };
 
-    if (d.version) addMeta('Version', (dd) => { dd.textContent = `v${escapeHtml(d.version)}`; });
+    if (d.version) addMeta('Version', (dd) => { dd.textContent = `v${d.version}`; });
     if (d.publisher) addMeta('Publisher', (dd) => {
       const raw = d.publisher_raw || d.publisher;
       if (raw && /^https?:\/\//i.test(String(raw))) {
@@ -316,7 +318,7 @@ export function openPackageDetailModal(options = {}) {
       d.keywords.forEach((kw) => {
         const tag = document.createElement('span');
         tag.className = 'modal-tag';
-        tag.textContent = escapeHtml(kw);
+        tag.textContent = kw; // textContent — no escape needed
         tags.appendChild(tag);
       });
       wrap.appendChild(tags);
