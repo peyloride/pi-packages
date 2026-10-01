@@ -143,8 +143,12 @@ async function npmFetch(url: string): Promise<Response> {
 
     if (response.status === 429 || response.status >= 500) {
       const retryAfterHeader = response.headers.get('Retry-After');
-      const delay = retryAfterHeader
-        ? Math.max(parseInt(retryAfterHeader, 10) * 1000, RETRY_BASE_DELAY)
+      const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
+      // Retry-After may be an HTTP-date (legal per RFC 9110) — parseInt gives
+      // NaN and sleep(NaN) returns immediately, tight-looping the retry.
+      // Fall back to exponential backoff for any non-numeric value.
+      const delay = Number.isFinite(retryAfterSeconds)
+        ? Math.max(retryAfterSeconds * 1000, RETRY_BASE_DELAY)
         : RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
       console.warn(`[Sync] npm returned ${response.status}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})...`);
       await sleep(delay);
