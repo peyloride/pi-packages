@@ -61,6 +61,13 @@ export function repoMetaBudget(): number {
   return repoBudget();
 }
 
+/** Number(value) but null/undefined/'' → null (Number(null) is 0, not null). */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Parse a GitHub API repo response into the subset we store. All fields are
  * defensive: a removed/renamed field degrades to null, never a crash.
@@ -74,9 +81,9 @@ function parseRepoPayload(body: any): {
   pushedAt: string | null;
 } {
   return {
-    stars: Number.isFinite(Number(body?.stargazers_count)) ? Number(body.stargazers_count) : null,
-    forks: Number.isFinite(Number(body?.forks_count)) ? Number(body.forks_count) : null,
-    openIssues: Number.isFinite(Number(body?.open_issues_count)) ? Number(body.open_issues_count) : null,
+    stars: numOrNull(body?.stargazers_count),
+    forks: numOrNull(body?.forks_count),
+    openIssues: numOrNull(body?.open_issues_count),
     license: body?.license?.spdx_id ? String(body.license.spdx_id) : null,
     archived: body?.archived === true,
     pushedAt: typeof body?.pushed_at === 'string' ? body.pushed_at : null,

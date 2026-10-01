@@ -317,6 +317,19 @@ describe('repoMeta.ts', () => {
       assert.ok(row.fetched_at);
     });
 
+    it('stores null (not 0) when a numeric GitHub field is null', async () => {
+      const db = getDb();
+      seedPackage('nullish/r');
+      // A missing/removed field must degrade to NULL — Number(null) === 0
+      // would have shown a fake "0 stars" on the card.
+      const fetchFn: any = async () => okResponse({ stargazers_count: null, forks_count: undefined, archived: false });
+      await syncRepoMeta(fetchFn);
+      const row = db.prepare('SELECT stars, forks, open_issues FROM repo_meta WHERE repo = ?').get('nullish/r') as any;
+      assert.equal(row.stars, null);
+      assert.equal(row.forks, null);
+      assert.equal(row.open_issues, null);
+    });
+
     it('reports the total tracked repo count', async () => {
       seedPackage('owner/a');
       seedPackage('owner/b');
