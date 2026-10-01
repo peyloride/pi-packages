@@ -42,9 +42,15 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 export interface StampedAsset {
-  content: string;
+  /** string for text assets, Buffer for binary ones (never lossily re-decoded). */
+  content: string | Buffer;
   contentType: string;
 }
+
+/** Extensions whose bytes must survive round-trip — never decoded as text. */
+const BINARY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.woff', '.woff2',
+]);
 
 /**
  * Compute a short version string from the mtimes of every file under `root`.
@@ -131,15 +137,25 @@ export function buildAssetCache(root: string, version: string): Map<string, Stam
         walk(abs, urlPath);
         continue;
       }
-      const raw = readFileSync(abs, 'utf-8');
       const ext = extname(entry.name).toLowerCase();
+      if (BINARY_EXTENSIONS.has(ext)) {
+        // Images and fonts are NOT text: decoding as UTF-8 replaces invalid
+        // byte sequences with U+FFFD and re-encoding corrupts the file
+        // (e.g. a PNG magic header 89504e47 → efbfbd50). Keep the raw
+        // Buffer — no stamping needed, served byte-identical.
+        cache.set(urlPath, {
+          content: readFileSync(abs),
+          contentType: MIME_TYPES[ext] || 'application/octet-stream',
+        });
+        continue;
+      }
+      const raw = readFileSync(abs, 'utf-8');
       let stamped: string;
       if (ext === '.html') {
         stamped = stripHtml(raw, version);
       } else if (ext === '.js' || ext === '.mjs' || ext === '.css') {
         stamped = stampInternalReferences(raw, version);
       } else {
-        // Non-text assets (images, fonts) — stamp not needed, served as-is.
         stamped = raw;
       }
       cache.set(urlPath, {

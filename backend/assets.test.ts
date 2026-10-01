@@ -93,9 +93,27 @@ describe('assets.ts', () => {
       assert.ok(css.includes('url("./bg.png?v=v123")'), `expected stamped url(), got: ${css}`);
     });
 
-    it('serves non-text assets (images) as-is without stamping', () => {
+    it('serves non-text assets (images) byte-identical, without stamping', () => {
       const cache = buildAssetCache(tempDir, 'v123');
-      assert.equal(cache.get('/bg.png')!.content, 'fake-png-data');
+      const content = cache.get('/bg.png')!.content;
+      assert.ok(Buffer.isBuffer(content), 'binary asset content must be a Buffer, not a decoded string');
+      assert.equal(content.toString('utf-8'), 'fake-png-data');
+    });
+
+    it('round-trips binary bytes without UTF-8 corruption', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'assets-binary-'));
+      try {
+        // PNG magic header + invalid-UTF-8 byte (0x80) — decoding as text
+        // would replace the 0x80 with U+FFFD (efbfbd) and corrupt the file.
+        const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x80, 0x00, 0xff]);
+        writeFileSync(join(dir, 'icon.png'), bytes);
+        const cache = buildAssetCache(dir, 'v1');
+        const content = cache.get('/icon.png')!.content as Buffer;
+        assert.ok(Buffer.isBuffer(content));
+        assert.ok(content.equals(bytes), 'binary bytes must survive the cache round-trip');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('leaves explicit query strings alone (does not double-stamp)', () => {
